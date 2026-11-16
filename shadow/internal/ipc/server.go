@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 )
 
 // Handler executes one forwarded command inside the worker session and
@@ -15,6 +16,8 @@ type Server struct {
 	listener      net.Listener
 	handler       Handler
 	trustedClient uint32
+	connsMu       sync.Mutex
+	conns         map[net.Conn]struct{}
 }
 
 // NewServer binds a pipe and trusts only the given client PID
@@ -25,7 +28,8 @@ func NewServer(pipeName string, trustedPID uint32, h Handler) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{listener: l, handler: h, trustedClient: trustedPID}, nil
+	return &Server{listener: l, handler: h, trustedClient: trustedPID,
+		conns: make(map[net.Conn]struct{})}, nil
 }
 
 // PipeName returns the bound pipe path.
@@ -39,6 +43,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()
 		s.listener.Close()
+		s.closeConns()
 	}()
 	for {
 		conn, err := s.listener.Accept()
@@ -50,8 +55,31 @@ func (s *Server) Serve(ctx context.Context) error {
 				return err
 			}
 		}
+		s.track(conn)
 		s.serveConn(ctx, conn)
+		s.untrack(conn)
 	}
+}
+
+func (s *Server) track(conn net.Conn) {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	s.conns[conn] = struct{}{}
+}
+
+func (s *Server) untrack(conn net.Conn) {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	delete(s.conns, conn)
+}
+
+func (s *Server) closeConns() {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	for c := range s.conns {
+		c.Close()
+	}
+	s.conns = make(map[net.Conn]struct{})
 }
 
 func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
@@ -81,8 +109,9 @@ func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
 	}
 }
 
-// Close stops accepting.
+// Close stops accepting and drops live connections.
 func (s *Server) Close() error {
+	s.closeConns()
 	return s.listener.Close()
 }
 

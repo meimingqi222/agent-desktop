@@ -8,10 +8,12 @@ import (
 )
 
 // Client is the host side of the pipe: one request in flight at a
-// time, matched to its response by id.
+// time, matched to its response by id. After a timed-out call the
+// client is dead: the orphaned read could desynchronize later replies.
 type Client struct {
-	conn io.ReadWriteCloser
-	mu   sync.Mutex
+	conn   io.ReadWriteCloser
+	mu     sync.Mutex
+	broken bool
 }
 
 // Dial connects to the worker's named pipe.
@@ -27,6 +29,9 @@ func Dial(pipeName string) (*Client, error) {
 func (c *Client) Call(ctx context.Context, command string, args []string) (*Response, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.broken {
+		return nil, fmt.Errorf("pipe client is closed")
+	}
 	req := NewRequest(command, args)
 	if err := WriteFrame(c.conn, req); err != nil {
 		return nil, fmt.Errorf("pipe write: %w", err)
@@ -43,10 +48,17 @@ func (c *Client) Call(ctx context.Context, command string, args []string) (*Resp
 	}()
 	select {
 	case <-ctx.Done():
+		c.broken = true
+		c.conn.Close()
 		return nil, ctx.Err()
 	case r := <-done:
 		if r.err != nil {
+			c.broken = true
 			return nil, fmt.Errorf("pipe read: %w", r.err)
+		}
+		if r.resp.ID != req.ID {
+			c.broken = true
+			return nil, fmt.Errorf("response id %d does not match request %d", r.resp.ID, req.ID)
 		}
 		if !r.resp.OK {
 			return nil, fmt.Errorf("worker error: %s", r.resp.Error)
@@ -57,6 +69,9 @@ func (c *Client) Call(ctx context.Context, command string, args []string) (*Resp
 
 // Close shuts the pipe.
 func (c *Client) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.broken = true
 	if c.conn == nil {
 		return nil
 	}
