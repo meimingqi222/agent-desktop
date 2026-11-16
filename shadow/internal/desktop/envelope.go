@@ -94,8 +94,10 @@ func NewData(command string, data any) (*Envelope, error) {
 	return &Envelope{Version: EnvelopeVersion, OK: true, Command: command, Data: raw}, nil
 }
 
-// InjectSurface parses an upstream envelope and stamps data.surface so
-// callers can tell which plane produced the result.
+// InjectSurface parses an upstream envelope and stamps which plane
+// produced the result. Commands like open-system-surface already use
+// data.surface for their own payload (e.g. "start-menu"), so when the
+// key is taken the plane goes to data.plane instead.
 func InjectSurface(raw []byte, s Surface) ([]byte, error) {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &top); err != nil {
@@ -113,7 +115,11 @@ func InjectSurface(raw []byte, s Surface) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	data["surface"] = surfaceRaw
+	if _, taken := data["surface"]; taken {
+		data["plane"] = surfaceRaw
+	} else {
+		data["surface"] = surfaceRaw
+	}
 	merged, err := json.Marshal(data)
 	if err != nil {
 		return nil, err

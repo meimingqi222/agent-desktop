@@ -12,11 +12,12 @@ import (
 // MCP server. It routes each command to the adapter for the requested
 // surface and returns the envelope contract.
 type Service struct {
-	main    *MainAdapter
-	pip     *PipAdapter
-	manager *surface.Manager
-	gate    *authz.Gate
-	surface Surface
+	main        *MainAdapter
+	pip         *PipAdapter
+	manager     *surface.Manager
+	gate        *authz.Gate
+	surface     Surface
+	mainGranted bool
 }
 
 // Config wires a Service.
@@ -60,15 +61,42 @@ func (s *Service) SwitchSurface(target Surface) {
 	s.surface = target
 }
 
+// GrantMain validates a token against the gate and, on success, allows
+// commands to run on the main desktop for the rest of this process.
+func (s *Service) GrantMain(token string) error {
+	if err := s.gate.Check(token); err != nil {
+		return err
+	}
+	s.mainGranted = true
+	return nil
+}
+
+// MainGranted reports whether this process may act on the main desktop.
+func (s *Service) MainGranted() bool {
+	return s.mainGranted
+}
+
 // Exec routes one command to the right surface adapter.
 func (s *Service) Exec(ctx context.Context, command string, args []string) (*Envelope, error) {
 	return s.ExecOn(ctx, s.surface, command, args)
 }
 
-// ExecOn routes one command to an explicit surface.
+// ExecOn routes one command to an explicit surface. Main-surface
+// commands need an earlier GrantMain: the plane that can disturb the
+// user's real desktop is never reachable without the token, whichever
+// path (flag, switch, MCP arg) selected it.
 func (s *Service) ExecOn(ctx context.Context, surf Surface, command string, args []string) (*Envelope, error) {
+	if surf == SurfaceMain && !s.mainGranted {
+		return NewError(command, CodeAuthRequired,
+			"operating the main desktop requires authorization",
+			"pass --auth-token matching AD_AUTH_TOKEN, or use --surface pip"), nil
+	}
 	a := s.adapterFor(surf)
 	if a == nil {
+		if surf == SurfaceMain {
+			return NewError(command, CodeInternal,
+				"agent-desktop binary not found; set "+BinaryEnvVar, ""), nil
+		}
 		return NewError(command, CodeInternal, "no adapter for surface "+string(surf), ""), nil
 	}
 	return a.Exec(ctx, command, args)
@@ -77,6 +105,9 @@ func (s *Service) ExecOn(ctx context.Context, surf Surface, command string, args
 func (s *Service) adapterFor(surf Surface) Adapter {
 	switch surf {
 	case SurfaceMain:
+		if s.main == nil {
+			return nil
+		}
 		return s.main
 	case SurfacePip:
 		return s.pip
@@ -109,5 +140,6 @@ func (s *Service) Status(ctx context.Context) (*Envelope, error) {
 			data.AgentDesktop = env.Data
 		}
 	}
+	data.Surfaces["main"] = map[string]any{"authorized": s.mainGranted}
 	return NewData("status", data)
 }
