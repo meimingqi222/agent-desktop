@@ -76,6 +76,10 @@ func resolveToExe(path string) string {
 		filepath.Join(dir, "agent-desktop-win32-arm64.exe"),
 		filepath.Join(dir, "node_modules", "agent-desktop", "bin", "agent-desktop-win32-x64.exe"),
 		filepath.Join(dir, "node_modules", "agent-desktop", "bin", "agent-desktop-win32-arm64.exe"),
+		// A project-local install puts the shim in <proj>/node_modules/.bin
+		// and the native binary in the sibling package's bin dir.
+		filepath.Join(dir, "..", "agent-desktop", "bin", "agent-desktop-win32-x64.exe"),
+		filepath.Join(dir, "..", "agent-desktop", "bin", "agent-desktop-win32-arm64.exe"),
 	} {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return candidate
