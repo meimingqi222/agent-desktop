@@ -91,6 +91,26 @@ func (s *Service) ExecOn(ctx context.Context, surf Surface, command string, args
 			"operating the main desktop requires authorization",
 			"pass --auth-token matching AD_AUTH_TOKEN, or use --surface pip"), nil
 	}
+	return s.execOn(ctx, surf, command, args)
+}
+
+// ExecOnForCaller runs a command for an unprivileged caller such as an
+// MCP connection. Unlike ExecOn it checks the supplied token on every
+// call and never turns a successful check into a process-wide grant:
+// on a multi-client SSE server, one client's token must not unlock the
+// main desktop for every other connection.
+func (s *Service) ExecOnForCaller(ctx context.Context, surf Surface, token, command string, args []string) (*Envelope, error) {
+	if surf == SurfaceMain {
+		if err := s.gate.Check(token); err != nil {
+			return NewError(command, CodeAuthRequired,
+				"operating the main desktop requires authorization",
+				"pass auth_token matching AD_AUTH_TOKEN, or use surface=pip"), nil
+		}
+	}
+	return s.execOn(ctx, surf, command, args)
+}
+
+func (s *Service) execOn(ctx context.Context, surf Surface, command string, args []string) (*Envelope, error) {
 	a := s.adapterFor(surf)
 	if a == nil {
 		if surf == SurfaceMain {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	gomcp "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -149,16 +150,17 @@ func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 				return resultOf(desktop.NewError(command, desktop.CodeInvalidArgs,
 					"unknown mouse action", "want move|click|wheel"), nil)
 			}
-			x := int(req.GetFloat("x", 0))
-			y := int(req.GetFloat("y", 0))
+			x := req.GetFloat("x", 0)
+			y := req.GetFloat("y", 0)
 			var args []string
 			if action == "wheel" {
-				args = []string{"--x", fmt.Sprint(x), "--y", fmt.Sprint(y)}
+				args = []string{fmt.Sprintf("--x=%s", num(x)), fmt.Sprintf("--y=%s", num(y))}
 				if d := req.GetFloat("delta", 0); d != 0 {
-					args = append(args, "--dy", fmt.Sprint(int(d)))
+					args = append(args, fmt.Sprintf("--dy=%s", num(d)))
 				}
 			} else {
-				args = []string{"--xy", fmt.Sprintf("%d,%d", x, y)}
+				// --flag=value form keeps negative coordinates parseable.
+				args = []string{fmt.Sprintf("--xy=%s,%s", num(x), num(y))}
 				if b := req.GetString("button", ""); b != "" && action == "click" {
 					args = append(args, "--button", b)
 				}
@@ -168,10 +170,7 @@ func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 			if err != nil {
 				return resultOf(desktop.NewError(command, desktop.CodeInvalidArgs, err.Error(), ""), nil)
 			}
-			if err := authorizeMain(svc, surf, req); err != nil {
-				return resultOf(desktop.NewError(command, desktop.CodeAuthRequired, err.Error(), ""), nil)
-			}
-			env, err := svc.ExecOn(ctx, surf, command, args)
+			env, err := svc.ExecOnForCaller(ctx, surf, req.GetString("auth_token", ""), command, args)
 			return resultOf(env, err)
 		})
 
@@ -210,7 +209,8 @@ func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 				return resultOf(desktop.NewError("surface switch", desktop.CodeInvalidArgs, err.Error(), ""), nil)
 			}
 			if target == desktop.SurfaceMain {
-				if err := svc.GrantMain(req.GetString("auth_token", "")); err != nil {
+				// Validate only: a persistent grant would leak to other SSE clients.
+				if err := svc.AuthGate().Check(req.GetString("auth_token", "")); err != nil {
 					return resultOf(desktop.NewError("surface switch", desktop.CodeAuthRequired,
 						err.Error(), "set AD_AUTH_TOKEN on the host"), nil)
 				}
@@ -234,18 +234,15 @@ func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 
 // forward builds a handler that translates tool args into an argv tail
 // and execs it on the requested surface. surface=main needs a matching
-// auth_token every call, same as the CLI gate.
+// auth_token on every call: the SSE server can serve several clients,
+// so a grant must never carry across connections.
 func forward(svc *desktop.Service, command string, build func(gomcp.CallToolRequest) []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
 		surf, err := targetSurface(svc, req)
 		if err != nil {
 			return resultOf(desktop.NewError(command, desktop.CodeInvalidArgs, err.Error(), ""), nil)
 		}
-		if err := authorizeMain(svc, surf, req); err != nil {
-			return resultOf(desktop.NewError(command, desktop.CodeAuthRequired,
-				err.Error(), "pass auth_token matching AD_AUTH_TOKEN, or use surface=pip"), nil)
-		}
-		env, err := svc.ExecOn(ctx, surf, command, build(req))
+		env, err := svc.ExecOnForCaller(ctx, surf, req.GetString("auth_token", ""), command, build(req))
 		return resultOf(env, err)
 	}
 }
@@ -255,16 +252,6 @@ func targetSurface(svc *desktop.Service, req gomcp.CallToolRequest) (desktop.Sur
 		return desktop.ParseSurface(s)
 	}
 	return svc.Surface(), nil
-}
-
-// authorizeMain enforces the main-desktop token on MCP calls the same
-// way GrantMain does on the CLI: a valid token grants the process for
-// later calls too (e.g. after desktop_surface_switch).
-func authorizeMain(svc *desktop.Service, surf desktop.Surface, req gomcp.CallToolRequest) error {
-	if surf != desktop.SurfaceMain || svc.MainGranted() {
-		return nil
-	}
-	return svc.GrantMain(req.GetString("auth_token", ""))
 }
 
 func screenshot(svc *desktop.Service) server.ToolHandlerFunc {
@@ -280,10 +267,7 @@ func screenshot(svc *desktop.Service) server.ToolHandlerFunc {
 		if err != nil {
 			return resultOf(desktop.NewError("screenshot", desktop.CodeInvalidArgs, err.Error(), ""), nil)
 		}
-		if err := authorizeMain(svc, surf, req); err != nil {
-			return resultOf(desktop.NewError("screenshot", desktop.CodeAuthRequired, err.Error(), ""), nil)
-		}
-		env, err := svc.ExecOn(ctx, surf, "screenshot", args)
+		env, err := svc.ExecOnForCaller(ctx, surf, req.GetString("auth_token", ""), "screenshot", args)
 		if err != nil || env == nil {
 			return resultOf(env, err)
 		}
@@ -295,6 +279,12 @@ func screenshot(svc *desktop.Service) server.ToolHandlerFunc {
 		}
 		return resultOf(env, err)
 	}
+}
+
+// num formats a coordinate without truncating fractions: the upstream
+// mouse commands take fractional values (e.g. wheel --dy 0.5).
+func num(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
 func resultOf(env *desktop.Envelope, err error) (*gomcp.CallToolResult, error) {
