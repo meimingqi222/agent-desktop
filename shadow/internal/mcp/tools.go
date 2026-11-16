@@ -17,6 +17,9 @@ var surfaceProp = gomcp.WithString("surface",
 	gomcp.Enum("main", "pip"),
 	gomcp.DefaultString("pip"))
 
+var authTokenProp = gomcp.WithString("auth_token",
+	gomcp.Description("required when surface=main; must match AD_AUTH_TOKEN on the host"))
+
 func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 	s.AddTool(gomcp.NewTool("desktop_status",
 		gomcp.WithDescription("Platform, permission and surface status, including shadow-session capability")),
@@ -27,7 +30,7 @@ func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 
 	s.AddTool(gomcp.NewTool("desktop_snapshot",
 		gomcp.WithDescription("UIA accessibility tree with ref ids for an app window"),
-		surfaceProp,
+		surfaceProp, authTokenProp,
 		gomcp.WithString("app", gomcp.Description("application name to snapshot, e.g. notepad.exe")),
 		gomcp.WithBoolean("interactive", gomcp.Description("interactive elements only (-i)")),
 		gomcp.WithNumber("max_depth", gomcp.Description("tree depth cap"))),
@@ -47,7 +50,7 @@ func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 
 	s.AddTool(gomcp.NewTool("desktop_click",
 		gomcp.WithDescription("Click an element by ref, e.g. @s8f3k2p9:e8"),
-		surfaceProp,
+		surfaceProp, authTokenProp,
 		gomcp.WithString("ref", gomcp.Required(), gomcp.Description("qualified ref"))),
 		forward(svc, "click", func(req gomcp.CallToolRequest) []string {
 			return []string{req.GetString("ref", "")}
@@ -55,7 +58,7 @@ func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 
 	s.AddTool(gomcp.NewTool("desktop_type",
 		gomcp.WithDescription("Type text into an element by ref"),
-		surfaceProp,
+		surfaceProp, authTokenProp,
 		gomcp.WithString("ref", gomcp.Required(), gomcp.Description("qualified ref")),
 		gomcp.WithString("text", gomcp.Required(), gomcp.Description("text to type"))),
 		forward(svc, "type", func(req gomcp.CallToolRequest) []string {
@@ -64,7 +67,7 @@ func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 
 	s.AddTool(gomcp.NewTool("desktop_press",
 		gomcp.WithDescription("Press a key or combo on the focused element"),
-		surfaceProp,
+		surfaceProp, authTokenProp,
 		gomcp.WithString("keys", gomcp.Required(), gomcp.Description("keys, e.g. \"enter\" or \"ctrl+c\""))),
 		forward(svc, "press", func(req gomcp.CallToolRequest) []string {
 			return []string{req.GetString("keys", "")}
@@ -72,14 +75,14 @@ func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 
 	s.AddTool(gomcp.NewTool("desktop_screenshot",
 		gomcp.WithDescription("PNG screenshot of a window or display; returns image content"),
-		surfaceProp,
+		surfaceProp, authTokenProp,
 		gomcp.WithString("app", gomcp.Description("application name")),
 		gomcp.WithNumber("screen", gomcp.Description("display index"))),
 		screenshot(svc))
 
 	s.AddTool(gomcp.NewTool("desktop_launch",
 		gomcp.WithDescription("Launch an application on the surface"),
-		surfaceProp,
+		surfaceProp, authTokenProp,
 		gomcp.WithString("app", gomcp.Required(), gomcp.Description("exe path or app name")),
 		gomcp.WithBoolean("activate", gomcp.Description("wait for a window")),
 		gomcp.WithNumber("timeout", gomcp.Description("ms cap, default 30000"))),
@@ -95,14 +98,14 @@ func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 		}))
 
 	s.AddTool(gomcp.NewTool("desktop_clipboard_get",
-		gomcp.WithDescription("Read the surface clipboard"), surfaceProp),
+		gomcp.WithDescription("Read the surface clipboard"), surfaceProp, authTokenProp),
 		forward(svc, "clipboard-get", func(req gomcp.CallToolRequest) []string {
 			return nil
 		}))
 
 	s.AddTool(gomcp.NewTool("desktop_clipboard_set",
 		gomcp.WithDescription("Write the surface clipboard"),
-		surfaceProp,
+		surfaceProp, authTokenProp,
 		gomcp.WithString("text", gomcp.Required())),
 		forward(svc, "clipboard-set", func(req gomcp.CallToolRequest) []string {
 			return []string{req.GetString("text", "")}
@@ -110,7 +113,7 @@ func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 
 	s.AddTool(gomcp.NewTool("desktop_wait",
 		gomcp.WithDescription("Wait for time, an element ref, text, or a window title"),
-		surfaceProp,
+		surfaceProp, authTokenProp,
 		gomcp.WithString("ref", gomcp.Description("qualified ref to wait for")),
 		gomcp.WithString("text", gomcp.Description("text to wait for in the tree")),
 		gomcp.WithString("window", gomcp.Description("window title to wait for")),
@@ -134,28 +137,39 @@ func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 
 	s.AddTool(gomcp.NewTool("desktop_mouse",
 		gomcp.WithDescription("Physical mouse event (move/click/wheel) via the surface input path"),
-		surfaceProp,
+		surfaceProp, authTokenProp,
 		gomcp.WithString("action", gomcp.Required(), gomcp.Enum("move", "click", "wheel")),
 		gomcp.WithNumber("x"), gomcp.WithNumber("y"),
 		gomcp.WithString("button", gomcp.Enum("left", "right", "middle")),
 		gomcp.WithNumber("delta")),
 		func(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
-			command := "mouse-" + req.GetString("action", "")
+			action := req.GetString("action", "")
+			command := "mouse-" + action
 			if !desktop.Forwardable[command] {
 				return resultOf(desktop.NewError(command, desktop.CodeInvalidArgs,
 					"unknown mouse action", "want move|click|wheel"), nil)
 			}
-			args := []string{"--x", fmt.Sprint(int(req.GetFloat("x", 0))),
-				"--y", fmt.Sprint(int(req.GetFloat("y", 0)))}
-			if b := req.GetString("button", ""); b != "" {
-				args = append(args, "--button", b)
+			x := int(req.GetFloat("x", 0))
+			y := int(req.GetFloat("y", 0))
+			var args []string
+			if action == "wheel" {
+				args = []string{"--x", fmt.Sprint(x), "--y", fmt.Sprint(y)}
+				if d := req.GetFloat("delta", 0); d != 0 {
+					args = append(args, "--dy", fmt.Sprint(int(d)))
+				}
+			} else {
+				args = []string{"--xy", fmt.Sprintf("%d,%d", x, y)}
+				if b := req.GetString("button", ""); b != "" && action == "click" {
+					args = append(args, "--button", b)
+				}
 			}
-			if d := req.GetFloat("delta", 0); d != 0 {
-				args = append(args, "--delta", fmt.Sprint(int(d)))
-			}
-			surf, err := desktop.ParseSurface(req.GetString("surface", string(svc.Surface())))
+			args = append(args, "--headed")
+			surf, err := targetSurface(svc, req)
 			if err != nil {
 				return resultOf(desktop.NewError(command, desktop.CodeInvalidArgs, err.Error(), ""), nil)
+			}
+			if err := authorizeMain(svc, surf, req); err != nil {
+				return resultOf(desktop.NewError(command, desktop.CodeAuthRequired, err.Error(), ""), nil)
 			}
 			env, err := svc.ExecOn(ctx, surf, command, args)
 			return resultOf(env, err)
@@ -196,8 +210,7 @@ func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 				return resultOf(desktop.NewError("surface switch", desktop.CodeInvalidArgs, err.Error(), ""), nil)
 			}
 			if target == desktop.SurfaceMain {
-				gate := svc.AuthGate()
-				if err := gate.Check(req.GetString("auth_token", "")); err != nil {
+				if err := svc.GrantMain(req.GetString("auth_token", "")); err != nil {
 					return resultOf(desktop.NewError("surface switch", desktop.CodeAuthRequired,
 						err.Error(), "set AD_AUTH_TOKEN on the host"), nil)
 				}
@@ -220,23 +233,38 @@ func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 }
 
 // forward builds a handler that translates tool args into an argv tail
-// and execs it on the requested surface.
+// and execs it on the requested surface. surface=main needs a matching
+// auth_token every call, same as the CLI gate.
 func forward(svc *desktop.Service, command string, build func(gomcp.CallToolRequest) []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
-		surf := req.GetString("surface", "")
-		var env *desktop.Envelope
-		var err error
-		if surf == "" {
-			env, err = svc.Exec(ctx, command, build(req))
-		} else {
-			var s desktop.Surface
-			s, err = desktop.ParseSurface(surf)
-			if err == nil {
-				env, err = svc.ExecOn(ctx, s, command, build(req))
-			}
+		surf, err := targetSurface(svc, req)
+		if err != nil {
+			return resultOf(desktop.NewError(command, desktop.CodeInvalidArgs, err.Error(), ""), nil)
 		}
+		if err := authorizeMain(svc, surf, req); err != nil {
+			return resultOf(desktop.NewError(command, desktop.CodeAuthRequired,
+				err.Error(), "pass auth_token matching AD_AUTH_TOKEN, or use surface=pip"), nil)
+		}
+		env, err := svc.ExecOn(ctx, surf, command, build(req))
 		return resultOf(env, err)
 	}
+}
+
+func targetSurface(svc *desktop.Service, req gomcp.CallToolRequest) (desktop.Surface, error) {
+	if s := req.GetString("surface", ""); s != "" {
+		return desktop.ParseSurface(s)
+	}
+	return svc.Surface(), nil
+}
+
+// authorizeMain enforces the main-desktop token on MCP calls the same
+// way GrantMain does on the CLI: a valid token grants the process for
+// later calls too (e.g. after desktop_surface_switch).
+func authorizeMain(svc *desktop.Service, surf desktop.Surface, req gomcp.CallToolRequest) error {
+	if surf != desktop.SurfaceMain || svc.MainGranted() {
+		return nil
+	}
+	return svc.GrantMain(req.GetString("auth_token", ""))
 }
 
 func screenshot(svc *desktop.Service) server.ToolHandlerFunc {
@@ -248,18 +276,14 @@ func screenshot(svc *desktop.Service) server.ToolHandlerFunc {
 		if n := req.GetFloat("screen", -1); n >= 0 {
 			args = append(args, "--screen", fmt.Sprint(int(n)))
 		}
-		surf := req.GetString("surface", "")
-		var env *desktop.Envelope
-		var err error
-		if surf == "" {
-			env, err = svc.Exec(ctx, "screenshot", args)
-		} else {
-			var s desktop.Surface
-			s, err = desktop.ParseSurface(surf)
-			if err == nil {
-				env, err = svc.ExecOn(ctx, s, "screenshot", args)
-			}
+		surf, err := targetSurface(svc, req)
+		if err != nil {
+			return resultOf(desktop.NewError("screenshot", desktop.CodeInvalidArgs, err.Error(), ""), nil)
 		}
+		if err := authorizeMain(svc, surf, req); err != nil {
+			return resultOf(desktop.NewError("screenshot", desktop.CodeAuthRequired, err.Error(), ""), nil)
+		}
+		env, err := svc.ExecOn(ctx, surf, "screenshot", args)
 		if err != nil || env == nil {
 			return resultOf(env, err)
 		}
@@ -284,7 +308,11 @@ func resultOf(env *desktop.Envelope, err error) (*gomcp.CallToolResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	return gomcp.NewToolResultText(string(out)), nil
+	res := gomcp.NewToolResultText(string(out))
+	if !env.OK {
+		res.IsError = true
+	}
+	return res, nil
 }
 
 func stateResult(command string, err error) (*gomcp.CallToolResult, error) {
