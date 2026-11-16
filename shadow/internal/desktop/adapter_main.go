@@ -49,12 +49,39 @@ func resolveAgentDesktop(explicit string) (string, error) {
 			return c, nil
 		}
 	}
-	for _, name := range []string{"agent-desktop.exe", "agent-desktop-win32-x64.exe", "agent-desktop.cmd", "agent-desktop"} {
-		if path, err := exec.LookPath(name); err == nil {
-			return path, nil
+	for _, name := range []string{"agent-desktop.exe", "agent-desktop-win32-x64.exe", "agent-desktop"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			continue
+		}
+		if resolved := resolveToExe(path); resolved != "" {
+			return resolved, nil
 		}
 	}
 	return "", fmt.Errorf("agent-desktop binary not found; set %s or install the agent-desktop npm package", BinaryEnvVar)
+}
+
+// resolveToExe maps a found path to the real native binary. npm's
+// global bin directory only carries the agent-desktop.cmd launcher
+// script; the win32 exe sits under the package's own bin dir. Never
+// exec a .cmd/.bat through cmd /c: forwarded args would be parsed by
+// the shell.
+func resolveToExe(path string) string {
+	if strings.EqualFold(filepath.Ext(path), ".exe") {
+		return path
+	}
+	dir := filepath.Dir(path)
+	for _, candidate := range []string{
+		filepath.Join(dir, "agent-desktop-win32-x64.exe"),
+		filepath.Join(dir, "agent-desktop-win32-arm64.exe"),
+		filepath.Join(dir, "node_modules", "agent-desktop", "bin", "agent-desktop-win32-x64.exe"),
+		filepath.Join(dir, "node_modules", "agent-desktop", "bin", "agent-desktop-win32-arm64.exe"),
+	} {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // Exec runs `agent-desktop <command> <args...>` and parses the envelope
@@ -62,10 +89,16 @@ func resolveAgentDesktop(explicit string) (string, error) {
 // INTERNAL envelope so callers always get the contract shape.
 func (a *MainAdapter) Exec(ctx context.Context, command string, args []string) (*Envelope, error) {
 	argv := append([]string{command}, args...)
-	cmd := commandFor(ctx, a.binaryPath, argv)
+	cmd := exec.CommandContext(ctx, a.binaryPath, argv...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	for _, arg := range args {
+		if arg == "--stdin" {
+			cmd.Stdin = os.Stdin
+			break
+		}
+	}
 	runErr := cmd.Run()
 	out := bytes.TrimSpace(stdout.Bytes())
 	if len(out) == 0 {
@@ -91,14 +124,6 @@ func (a *MainAdapter) Exec(ctx context.Context, command string, args []string) (
 		return NewError(command, CodeInternal, err.Error(), ""), nil
 	}
 	return &env, nil
-}
-
-func commandFor(ctx context.Context, binary string, argv []string) *exec.Cmd {
-	lower := strings.ToLower(binary)
-	if strings.HasSuffix(lower, ".cmd") || strings.HasSuffix(lower, ".bat") {
-		return exec.CommandContext(ctx, "cmd", append([]string{"/c", binary}, argv...)...)
-	}
-	return exec.CommandContext(ctx, binary, argv...)
 }
 
 func truncate(s string, n int) string {
