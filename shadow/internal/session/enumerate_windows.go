@@ -108,7 +108,7 @@ func sessionUserName(sessionID uint32) (string, error) {
 func currentSessionID() (uint32, error) {
 	var id uint32
 	r, _, err := procProcessIdToSessionId.Call(
-		uintptr(windows.CurrentProcess()),
+		uintptr(os.Getpid()),
 		uintptr(unsafe.Pointer(&id)))
 	if r == 0 {
 		return 0, err
