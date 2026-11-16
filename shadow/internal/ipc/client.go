@@ -67,13 +67,16 @@ func (c *Client) Call(ctx context.Context, command string, args []string) (*Resp
 	}
 }
 
-// Close shuts the pipe.
+// Close shuts the pipe. The conn is closed before taking the mutex so
+// a Call blocked on a stalled worker is interrupted instead of pinning
+// shutdown behind the call lock.
 func (c *Client) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.broken = true
-	if c.conn == nil {
-		return nil
+	var err error
+	if c.conn != nil {
+		err = c.conn.Close()
 	}
-	return c.conn.Close()
+	c.mu.Lock()
+	c.broken = true
+	c.mu.Unlock()
+	return err
 }
