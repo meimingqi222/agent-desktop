@@ -6,6 +6,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.4
 	github.com/mark3labs/mcp-go v1.5.0
 	golang.org/x/sys v0.50.0
+	golang.org/x/term v0.48.0
 )
 
 require (

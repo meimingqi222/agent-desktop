@@ -22,7 +22,7 @@ binary path).
 ```text
 ad <agent-desktop command> [args] [--surface main|pip]
 ad status
-ad surface open [--display WxH] [--viewer] [--username U] [--password P] [--domain D]
+ad surface open [--display WxH] [--viewer] [--username U] [--domain D]
 ad surface switch --target main|pip [--auth-token T]
 ad surface close
 ad surface status
@@ -36,9 +36,8 @@ so the full upstream command surface (`snapshot`, `click`, `set-value`,
 
 ```sh
 ad status
-ad snapshot --app notepad.exe -i --surface main
-ad set-value @s2hektu6eaeu0s:e1 "hello" --surface main
-ad screenshot --surface main
+AD_AUTH_TOKEN=tok ad snapshot --app notepad.exe -i --surface main --auth-token tok
+AD_AUTH_TOKEN=tok ad set-value @s2hektu6eaeu0s:e1 "hello" --surface main --auth-token tok
 ```
 
 ### Flags
@@ -47,8 +46,12 @@ ad screenshot --surface main
 |---|---|---|
 | `--surface` | — | target plane; default `pip` |
 | `--agent-desktop-bin` | `AD_AGENT_DESKTOP_BIN` | explicit agent-desktop binary |
-| `--auth-token` | `AD_AUTH_TOKEN` | grant for `--target main` |
+| `--auth-token` | `AD_AUTH_TOKEN` | grant for main-surface commands and `--target main` |
 | — | `AD_SHADOW_USERNAME` / `AD_SHADOW_PASSWORD` | credentials for `surface open` |
+
+`surface open` never takes a password on the command line: it comes from
+`AD_SHADOW_PASSWORD` or an interactive prompt. Commands on `--surface main`
+always require a valid auth token (`AUTH_REQUIRED` otherwise).
 
 ## MCP
 

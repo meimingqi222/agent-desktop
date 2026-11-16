@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/meimingqi222/agent-desktop-shadow/internal/authz"
+	"golang.org/x/term"
+
 	"github.com/meimingqi222/agent-desktop-shadow/internal/desktop"
 	"github.com/meimingqi222/agent-desktop-shadow/internal/mcp"
 	"github.com/meimingqi222/agent-desktop-shadow/internal/surface"
@@ -21,7 +22,8 @@ const usage = `ad — agent-desktop-shadow
 usage:
   ad <command> [args] [--surface main|pip]   forward a command to agent-desktop
   ad status                                  platform + surface status
-  ad surface open [--display WxH] [--viewer] [--username U] [--password P]
+  ad surface open [--display WxH] [--viewer] [--username U] [--domain D]
+                                  (password via AD_SHADOW_PASSWORD or interactive prompt)
   ad surface switch --target main|pip [--auth-token T]
   ad surface close
   ad surface status
@@ -35,7 +37,7 @@ global flags:
 examples:
   ad status
   ad snapshot --app notepad.exe -i --surface main
-  ad surface open --username Administrator --password ***
+  AD_SHADOW_PASSWORD=*** ad surface open --username Administrator
 `
 
 type cliConfig struct {
@@ -70,6 +72,9 @@ func run(args []string) int {
 		if err != nil {
 			desktop.Write(desktop.NewError("parse", desktop.CodeInvalidArgs, err.Error(), ""))
 			return desktop.ExitArgs
+		}
+		if s == desktop.SurfaceMain {
+			svc.GrantMain(cfg.authToken)
 		}
 		svc.SwitchSurface(s)
 	}
@@ -185,12 +190,6 @@ func runSurface(ctx context.Context, svc *desktop.Service, cfg *cliConfig, args 
 					return failArgs("surface open", "--username needs a value")
 				}
 				opts.Username = subArgs[i]
-			case "--password":
-				i++
-				if i >= len(subArgs) {
-					return failArgs("surface open", "--password needs a value")
-				}
-				opts.Password = subArgs[i]
 			case "--domain":
 				i++
 				if i >= len(subArgs) {
@@ -204,6 +203,19 @@ func runSurface(ctx context.Context, svc *desktop.Service, cfg *cliConfig, args 
 		}
 		if opts.Password == "" {
 			opts.Password = os.Getenv("AD_SHADOW_PASSWORD")
+		}
+		if opts.Username == "" {
+			opts.Username = os.Getenv("USERNAME")
+		}
+		if opts.Password == "" {
+			pw, err := promptPassword()
+			if err != nil {
+				desktop.Write(desktop.NewError("surface open", desktop.CodeAuthRequired,
+					"a Windows account credential is required to create the shadow session",
+					"set AD_SHADOW_PASSWORD, or run interactively to be prompted"))
+				return desktop.ExitError
+			}
+			opts.Password = pw
 		}
 		info, err := svc.Manager().Open(ctx, opts)
 		if err != nil {
@@ -234,7 +246,7 @@ func runSurface(ctx context.Context, svc *desktop.Service, cfg *cliConfig, args 
 			return desktop.ExitArgs
 		}
 		if s == desktop.SurfaceMain {
-			if err := authz.NewGate("").Check(cfg.authToken); err != nil {
+			if err := svc.GrantMain(cfg.authToken); err != nil {
 				desktop.Write(desktop.NewError("surface switch", desktop.CodeAuthRequired,
 					"switching to the main desktop requires --auth-token matching AD_AUTH_TOKEN",
 					"set AD_AUTH_TOKEN on the host and pass --auth-token, or use --surface pip"))
@@ -323,4 +335,19 @@ func exitOf(env *desktop.Envelope) int {
 		return desktop.ExitOK
 	}
 	return desktop.ExitError
+}
+
+// promptPassword reads the Windows account password interactively so
+// credentials never appear on a command line.
+func promptPassword() (string, error) {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return "", fmt.Errorf("stdin is not a terminal")
+	}
+	fmt.Fprint(os.Stderr, "Windows password: ")
+	pw, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", err
+	}
+	return string(pw), nil
 }
