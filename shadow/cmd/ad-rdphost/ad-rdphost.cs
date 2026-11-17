@@ -191,7 +191,16 @@ static class P {
         OleInitialize(IntPtr.Zero);
         if (!WTSEnableChildSessions(true)) { EmitErr("WTSEnableChildSessions failed"); return 1; }
 
-        var form = new Form { Width = 1600, Height = 900, Text = "ad-rdphost" };
+        int dw = 1600, dh = 900;
+        {
+            string w = Environment.GetEnvironmentVariable("AD_DISPLAY_W");
+            string h = Environment.GetEnvironmentVariable("AD_DISPLAY_H");
+            if (w != null) int.TryParse(w, out dw);
+            if (h != null) int.TryParse(h, out dh);
+            if (dw <= 0) dw = 1600;
+            if (dh <= 0) dh = 900;
+        }
+        var form = new Form { Width = dw, Height = dh, Text = "ad-rdphost" };
         var ax = new RdpAx { Dock = DockStyle.Fill };
         ((System.ComponentModel.ISupportInitialize)ax).BeginInit();
         form.Controls.Add(ax);
@@ -209,8 +218,8 @@ static class P {
         }
         var t = ocx.GetType();
         var f = BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase;
-        t.InvokeMember("DesktopWidth", f | BindingFlags.SetProperty, null, ocx, new object[]{1600});
-        t.InvokeMember("DesktopHeight", f | BindingFlags.SetProperty, null, ocx, new object[]{900});
+        t.InvokeMember("DesktopWidth", f | BindingFlags.SetProperty, null, ocx, new object[]{dw});
+        t.InvokeMember("DesktopHeight", f | BindingFlags.SetProperty, null, ocx, new object[]{dh});
 
         IntPtr pUnk = Marshal.GetIUnknownForObject(ocx);
         Guid iidTsc = new Guid("8C11EFAE-92C3-11D1-BC1E-00C04FA31489");
@@ -292,7 +301,7 @@ static class P {
     static void WaitChild() {
         for (int i = 0; i < 600 && !childReady; i++) {
             uint cid;
-            if (WTSGetChildSessionId(out cid)) {
+            if (WTSGetChildSessionId(out cid) && cid != 0xFFFFFFFF) {
                 childReady = true;
                 Console.WriteLine("{\"event\":\"ready\",\"session_id\":" + cid + "}");
                 Console.Out.Flush();
