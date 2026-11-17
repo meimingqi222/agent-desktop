@@ -61,6 +61,9 @@ func (a *PipAdapter) Exec(ctx context.Context, command string, args []string) (*
 func pipedStdin(args []string) ([]byte, error) {
 	wants := false
 	for _, a := range args {
+		if a == "--" {
+			break
+		}
 		if a == "--stdin" {
 			wants = true
 			break
