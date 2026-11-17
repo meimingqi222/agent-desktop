@@ -175,9 +175,9 @@ func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 		})
 
 	s.AddTool(gomcp.NewTool("desktop_surface_open",
-		gomcp.WithDescription("Create or attach the shadow session (requires Windows credentials)"),
-		gomcp.WithString("username", gomcp.Required()),
-		gomcp.WithString("password", gomcp.Required()),
+		gomcp.WithDescription("Create or attach the shadow session. Credentials are optional: child sessions auto-log on as the calling user; supply username+password only to pre-verify them."),
+		gomcp.WithString("username"),
+		gomcp.WithString("password"),
 		gomcp.WithString("domain"),
 		gomcp.WithString("display", gomcp.Description("e.g. 1920x1080")),
 		gomcp.WithBoolean("viewer")),
@@ -228,6 +228,48 @@ func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 			if e != nil {
 				return nil, e
 			}
+			return resultOf(env, err)
+		})
+
+	s.AddTool(gomcp.NewTool("desktop_surface_viewer",
+		gomcp.WithDescription("Show or hide the live shadow-desktop window on the user's desktop"),
+		gomcp.WithBoolean("on", gomcp.Description("show (default) or hide"), gomcp.DefaultBool(true))),
+		func(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
+			on := req.GetBool("on", true)
+			if err := svc.Manager().Viewer(ctx, on); err != nil {
+				return stateResult("surface viewer", err)
+			}
+			state := "hidden"
+			if on {
+				state = "shown"
+			}
+			env, err := desktop.NewData("surface viewer", map[string]string{"viewer": state})
+			return resultOf(env, err)
+		})
+
+	// Escape hatch: any agent-desktop command the named tools don't
+	// cover (list-windows, scroll, drag, find, batch, ...) is still one
+	// tool call away, and upstream additions work without a rebuild.
+	s.AddTool(gomcp.NewTool("desktop_exec",
+		gomcp.WithDescription("Run any agent-desktop command on a surface, e.g. list-windows, scroll, drag, batch"),
+		surfaceProp, authTokenProp,
+		gomcp.WithString("command", gomcp.Required(), gomcp.Description("agent-desktop command name")),
+		gomcp.WithArray("args", gomcp.WithStringItems(), gomcp.Description("command arguments"))),
+		func(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
+			command := req.GetString("command", "")
+			var args []string
+			if raw, ok := req.GetArguments()["args"].([]any); ok {
+				for _, v := range raw {
+					if s, ok := v.(string); ok {
+						args = append(args, s)
+					}
+				}
+			}
+			surf, err := targetSurface(svc, req)
+			if err != nil {
+				return resultOf(desktop.NewError(command, desktop.CodeInvalidArgs, err.Error(), ""), nil)
+			}
+			env, err := svc.ExecOnForCaller(ctx, surf, req.GetString("auth_token", ""), command, args)
 			return resultOf(env, err)
 		})
 }

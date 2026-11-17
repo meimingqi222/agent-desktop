@@ -48,6 +48,7 @@ type cliConfig struct {
 }
 
 func main() {
+	extractBundledHelpers()
 	code := run(os.Args[1:])
 	os.Exit(code)
 }

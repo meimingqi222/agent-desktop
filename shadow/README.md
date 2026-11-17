@@ -70,8 +70,42 @@ ad mcp serve --sse 127.0.0.1:8788
 Tools: `desktop_status`, `desktop_snapshot`, `desktop_click`, `desktop_type`,
 `desktop_press`, `desktop_mouse`, `desktop_screenshot`, `desktop_launch`,
 `desktop_clipboard_get`, `desktop_clipboard_set`, `desktop_wait`,
-`desktop_surface_open`, `desktop_surface_switch`, `desktop_surface_close`.
-Each takes a `surface` argument (default `pip`).
+`desktop_surface_open`, `desktop_surface_switch`, `desktop_surface_close`,
+`desktop_surface_viewer`, and `desktop_exec` — an escape hatch that forwards
+any agent-desktop command (`list-windows`, `scroll`, `drag`, `find`, `batch`,
+...) so upstream additions need no rebuild. Each takes a `surface` argument
+(default `pip`). `desktop_surface_open` needs no credentials: child sessions
+auto-log on as the calling user.
+
+## Agent integration
+
+Claude Desktop / Zed-style config:
+
+```json
+{
+  "mcpServers": {
+    "agent-desktop-shadow": {
+      "command": "C:\\path\\to\\ad.exe",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+Agents without MCP can call the CLI directly — every command prints the
+agent-desktop JSON envelope (`version/ok/data/error` + `data.surface`).
+`ad` is non-interactive: nothing prompts on a non-TTY stdin.
+
+### Single-binary distribution
+
+```powershell
+scripts\build.ps1
+```
+
+builds `bin\ad.exe` with `ad-remote.exe` and `ad-rdphost.exe` embedded; on
+first run it extracts them next to itself, so copying `ad.exe` alone is a
+complete install (a normal `go build` still works — helpers are then
+expected as siblings).
 
 ## Shadow session
 
