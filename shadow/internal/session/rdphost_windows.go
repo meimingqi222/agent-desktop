@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -58,11 +59,19 @@ func spawnRdpHost(width, height int) (*RdpHost, error) {
 		return nil, fmt.Errorf("ad-rdphost.exe not found at %s: %w", path, err)
 	}
 	cmd := exec.Command(path)
+	// Drop any inherited AD_DISPLAY_* so a stale value can never win over
+	// the dimensions requested on this open.
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "AD_DISPLAY_W=") || strings.HasPrefix(kv, "AD_DISPLAY_H=") {
+			continue
+		}
+		cmd.Env = append(cmd.Env, kv)
+	}
 	if width > 0 {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("AD_DISPLAY_W=%d", width))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("AD_DISPLAY_W=%d", width))
 	}
 	if height > 0 {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("AD_DISPLAY_H=%d", height))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("AD_DISPLAY_H=%d", height))
 	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
