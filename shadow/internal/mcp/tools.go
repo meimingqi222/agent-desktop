@@ -265,6 +265,15 @@ func addDesktopTools(s *server.MCPServer, svc *desktop.Service) {
 					}
 				}
 			}
+			for _, a := range args {
+				if a == "--stdin" {
+					// --stdin would read the MCP transport stream itself
+					// and hang waiting for EOF.
+					return resultOf(desktop.NewError(command, desktop.CodeInvalidArgs,
+						"--stdin is not available over MCP",
+						"pass the content as a regular argument instead"), nil)
+				}
+			}
 			surf, err := targetSurface(svc, req)
 			if err != nil {
 				return resultOf(desktop.NewError(command, desktop.CodeInvalidArgs, err.Error(), ""), nil)
