@@ -8,7 +8,7 @@ import (
 
 func TestFrameRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
-	req := NewRequest("snapshot", []string{"--app", "notepad.exe"})
+	req := NewRequest("snapshot", []string{"--app", "notepad.exe"}, nil)
 	if err := WriteFrame(&buf, req); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestClientRoundTrip(t *testing.T) {
 		_ = WriteFrame(c2, &Response{ID: req.ID, OK: true, Payload: []byte(`{"ok":true}`)})
 	}()
 	client := &Client{conn: c1}
-	resp, err := client.Call(t.Context(), "status", nil)
+	resp, err := client.Call(t.Context(), "status", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

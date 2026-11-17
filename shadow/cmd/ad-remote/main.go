@@ -59,8 +59,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	server, err := ipc.NewServer(pipeName, uint32(hostPID), func(ctx context.Context, command string, args []string) ([]byte, error) {
-		env, err := adapter.Exec(ctx, command, args)
+	server, err := ipc.NewServer(pipeName, uint32(hostPID), func(ctx context.Context, req *ipc.Request) ([]byte, error) {
+		env, err := adapter.ExecWithStdin(ctx, req.Command, req.Args, req.Stdin)
 		if err != nil {
 			return nil, err
 		}

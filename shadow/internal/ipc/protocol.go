@@ -19,6 +19,10 @@ type Request struct {
 	ID      uint64   `json:"id"`
 	Command string   `json:"command"`
 	Args    []string `json:"args,omitempty"`
+	// Stdin carries the caller's piped standard input for commands
+	// that read it (e.g. `type --stdin`); the worker feeds it to the
+	// agent-desktop process instead of its own stdin.
+	Stdin []byte `json:"stdin,omitempty"`
 }
 
 // Response is the worker's reply. Payload is the agent-desktop JSON
@@ -33,8 +37,8 @@ type Response struct {
 var nextID atomic.Uint64
 
 // NewRequest mints a request id.
-func NewRequest(command string, args []string) *Request {
-	return &Request{ID: nextID.Add(1), Command: command, Args: args}
+func NewRequest(command string, args []string, stdin []byte) *Request {
+	return &Request{ID: nextID.Add(1), Command: command, Args: args, Stdin: stdin}
 }
 
 // WriteFrame writes one length-prefixed JSON frame.

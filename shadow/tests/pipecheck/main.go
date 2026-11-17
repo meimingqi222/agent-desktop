@@ -18,7 +18,7 @@ func main() {
 	defer c.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	resp, err := c.Call(ctx, "status", nil)
+	resp, err := c.Call(ctx, "status", nil, nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "call:", err)
 		os.Exit(1)

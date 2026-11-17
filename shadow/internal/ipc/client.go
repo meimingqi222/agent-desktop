@@ -25,14 +25,15 @@ func Dial(pipeName string) (*Client, error) {
 	return &Client{conn: conn}, nil
 }
 
-// Call sends one command and waits for its response.
-func (c *Client) Call(ctx context.Context, command string, args []string) (*Response, error) {
+// Call sends one command and waits for its response. stdin is the
+// caller's piped input to forward to the command, or nil.
+func (c *Client) Call(ctx context.Context, command string, args []string, stdin []byte) (*Response, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.broken {
 		return nil, fmt.Errorf("pipe client is closed")
 	}
-	req := NewRequest(command, args)
+	req := NewRequest(command, args, stdin)
 	if err := WriteFrame(c.conn, req); err != nil {
 		return nil, fmt.Errorf("pipe write: %w", err)
 	}
@@ -65,6 +66,13 @@ func (c *Client) Call(ctx context.Context, command string, args []string) (*Resp
 		}
 		return r.resp, nil
 	}
+}
+
+// Broken reports whether the client can no longer serve calls.
+func (c *Client) Broken() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.broken
 }
 
 // Close shuts the pipe. The conn is closed before taking the mutex so

@@ -92,6 +92,12 @@ func resolveToExe(path string) string {
 // from stdout. A non-JSON stdout or a failed launch is folded into an
 // INTERNAL envelope so callers always get the contract shape.
 func (a *MainAdapter) Exec(ctx context.Context, command string, args []string) (*Envelope, error) {
+	return a.ExecWithStdin(ctx, command, args, nil)
+}
+
+// ExecWithStdin is Exec with an explicit stdin source. When stdin is
+// nil and the args ask for --stdin, the process's own os.Stdin is used.
+func (a *MainAdapter) ExecWithStdin(ctx context.Context, command string, args []string, stdin []byte) (*Envelope, error) {
 	argv := append([]string{command}, args...)
 	cmd := exec.CommandContext(ctx, a.binaryPath, argv...)
 	var stdout, stderr bytes.Buffer
@@ -99,7 +105,11 @@ func (a *MainAdapter) Exec(ctx context.Context, command string, args []string) (
 	cmd.Stderr = &stderr
 	for _, arg := range args {
 		if arg == "--stdin" {
-			cmd.Stdin = os.Stdin
+			if stdin != nil {
+				cmd.Stdin = bytes.NewReader(stdin)
+			} else {
+				cmd.Stdin = os.Stdin
+			}
 			break
 		}
 	}

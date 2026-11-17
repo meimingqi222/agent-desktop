@@ -3,6 +3,10 @@ package desktop
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"os"
+
+	"golang.org/x/term"
 
 	"github.com/meimingqi222/agent-desktop-shadow/internal/surface"
 )
@@ -30,7 +34,11 @@ func (a *PipAdapter) Exec(ctx context.Context, command string, args []string) (*
 	if err := a.manager.EnsureReady(ctx); err != nil {
 		return notReadyEnvelope(command, err), nil
 	}
-	raw, err := a.manager.Forward(ctx, command, args)
+	stdin, err := pipedStdin(args)
+	if err != nil {
+		return NewError(command, CodeInternal, err.Error(), ""), nil
+	}
+	raw, err := a.manager.Forward(ctx, command, args, stdin)
 	if err != nil {
 		return NewError(command, CodeInternal, err.Error(), ""), nil
 	}
@@ -43,6 +51,24 @@ func (a *PipAdapter) Exec(ctx context.Context, command string, args []string) (*
 		return NewError(command, CodeInternal, err.Error(), ""), nil
 	}
 	return &env, nil
+}
+
+// pipedStdin reads the caller's piped standard input when the command
+// asks for --stdin, so it can be forwarded to the worker. On an
+// interactive terminal it returns nil and lets the worker read its own
+// (equally interactive) stdin.
+func pipedStdin(args []string) ([]byte, error) {
+	wants := false
+	for _, a := range args {
+		if a == "--stdin" {
+			wants = true
+			break
+		}
+	}
+	if !wants || term.IsTerminal(int(os.Stdin.Fd())) {
+		return nil, nil
+	}
+	return io.ReadAll(os.Stdin)
 }
 
 func notReadyEnvelope(command string, err error) *Envelope {

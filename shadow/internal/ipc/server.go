@@ -8,8 +8,9 @@ import (
 )
 
 // Handler executes one forwarded command inside the worker session and
-// returns the agent-desktop envelope bytes to send back.
-type Handler func(ctx context.Context, command string, args []string) ([]byte, error)
+// returns the agent-desktop envelope bytes to send back. req.Stdin is
+// the caller's piped input for commands that read standard input.
+type Handler func(ctx context.Context, req *Request) ([]byte, error)
 
 // Server is the worker end of the named pipe.
 type Server struct {
@@ -95,7 +96,7 @@ func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
 		if err := ReadFrame(conn, &req); err != nil {
 			return
 		}
-		payload, err := s.handler(ctx, req.Command, req.Args)
+		payload, err := s.handler(ctx, &req)
 		resp := Response{ID: req.ID}
 		if err != nil {
 			resp.Error = err.Error()
