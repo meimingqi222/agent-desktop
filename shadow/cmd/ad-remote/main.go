@@ -75,6 +75,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	startDialogCloser(ctx)
+
 	if err := server.Serve(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "ad-remote: serve: %v\n", err)
 		os.Exit(1)

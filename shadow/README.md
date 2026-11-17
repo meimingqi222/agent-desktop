@@ -131,6 +131,20 @@ child session is gone. Verified end-to-end on Windows Server 2022:
 `list-windows`, `snapshot` (UIA tree) and `screenshot` all executed inside
 the shadow desktop.
 
+### Dialog auto-closer
+
+`ad-remote` runs a `dialog_auto_closer` loop inside the shadow session
+(design.md v0.6): every 750 ms it scans top-level dialogs and dismisses
+whitelisted system error UI — Windows Error Reporting (`WerFault*`),
+hard-error boxes ("* - System Error", "Exception Processing Message"),
+.NET unhandled-exception dialogs and the localized equivalents — by
+pressing the safest dismiss button (`Don't send` / `Cancel` / `No` /
+`Close` / `OK`, in that order; never affirmative or debug actions) or
+`WM_CLOSE` as a fallback. A modal nobody can click would otherwise stall
+every forwarded command. Application dialogs raised by the agent's own
+apps are left untouched. Each dismissal is logged on the worker's
+stderr; set `AD_DIALOG_CLOSER=0` to disable.
+
 ### Viewer
 
 `ad-rdphost` already hosts the mstscax control, which renders the child
@@ -162,6 +176,7 @@ with disconnect reason 4408.
 | v0.3 IPC | **done** — `ad-remote` worker + `u32`+JSON named-pipe protocol, verified across sessions (console → child) |
 | shadow-session create | **done** — WTS child sessions via `ad-rdphost` + `ConnectToChildSession`; `surface open/close` verified end-to-end |
 | viewer | **done** — `ad surface viewer` toggles the live shadow-desktop window rendered by mstscax inside `ad-rdphost` |
+| dialog_auto_closer | **done** — `ad-remote` dismisses whitelisted system error dialogs in the shadow session (`AD_DIALOG_CLOSER=0` to disable) |
 | InputSink | seam (`internal/rdp`) — not needed: input reaches the child session through the in-session worker |
 | authz gate | done — `surface switch --target main` requires `--auth-token` matching `AD_AUTH_TOKEN` |
 
