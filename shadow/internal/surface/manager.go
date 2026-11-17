@@ -385,6 +385,11 @@ func registerWorker(bin string) error {
 		bin = os.Getenv("AD_AGENT_DESKTOP_BIN")
 	}
 	if bin != "" {
+		// The worker starts at logon in a different working directory, so
+		// a relative path must be made absolute before it is stored.
+		if abs, err := filepath.Abs(bin); err == nil {
+			bin = abs
+		}
 		args += fmt.Sprintf(` --agent-desktop-bin "%s"`, bin)
 	}
 	return session.RegisterWorkerRunKey(args)
