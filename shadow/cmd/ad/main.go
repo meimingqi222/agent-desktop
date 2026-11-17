@@ -173,7 +173,7 @@ func runSurface(ctx context.Context, svc *desktop.Service, cfg *cliConfig, args 
 	sub, subArgs := args[0], args[1:]
 	switch sub {
 	case "open":
-		opts := surface.OpenOpts{}
+		opts := surface.OpenOpts{AgentDesktopBin: cfg.binaryPath}
 		for i := 0; i < len(subArgs); i++ {
 			switch subArgs[i] {
 			case "--display":
