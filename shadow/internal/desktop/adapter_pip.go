@@ -3,6 +3,7 @@ package desktop
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 
@@ -68,8 +69,18 @@ func pipedStdin(args []string) ([]byte, error) {
 	if !wants || term.IsTerminal(int(os.Stdin.Fd())) {
 		return nil, nil
 	}
-	return io.ReadAll(os.Stdin)
+	data, err := io.ReadAll(io.LimitReader(os.Stdin, maxPipedStdin+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxPipedStdin {
+		return nil, fmt.Errorf("--stdin input exceeds the %d byte limit", maxPipedStdin)
+	}
+	return data, nil
 }
+
+// maxPipedStdin bounds the piped input forwarded through one IPC frame.
+const maxPipedStdin = 1 << 20
 
 func notReadyEnvelope(command string, err error) *Envelope {
 	se, ok := err.(*surface.StateError)
