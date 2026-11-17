@@ -332,9 +332,16 @@ static class P {
 
     // Dispatch handles one {"cmd":...} line from stdin or the control
     // pipe and returns the JSON ack written back to pipe clients.
-    static string Dispatch(string line) {
+    // "shutdown" is honored only from the owning process's stdin: the
+    // pipe is reachable by any local process, so it must not be able
+    // to tear down the session anchor.
+    static string Dispatch(string line, bool allowShutdown) {
         if (line == null) return "{\"ok\":false,\"error\":\"empty\"}";
-        if (line.Contains("\"shutdown\"")) { DoShutdown(); return "{\"ok\":true}"; }
+        if (line.Contains("\"shutdown\"")) {
+            if (!allowShutdown) return "{\"ok\":false,\"error\":\"shutdown is not accepted on the control pipe\"}";
+            DoShutdown();
+            return "{\"ok\":true}";
+        }
         if (line.Contains("\"show\"")) {
             OnUI(() => { theForm.Show(); theForm.WindowState = FormWindowState.Normal; theForm.Activate(); });
             return "{\"ok\":true}";
@@ -357,7 +364,7 @@ static class P {
                     var r = new StreamReader(pipe);
                     var w = new StreamWriter(pipe);
                     w.AutoFlush = true;
-                    w.WriteLine(Dispatch(r.ReadLine()));
+                    w.WriteLine(Dispatch(r.ReadLine(), false));
                 }
             } catch { Thread.Sleep(200); }
         }
@@ -387,7 +394,7 @@ static class P {
         string line;
         while ((line = Console.In.ReadLine()) != null) {
             if (line.Contains("\"shutdown\"")) {
-                Dispatch(line);
+                Dispatch(line, true);
                 return;
             }
         }
