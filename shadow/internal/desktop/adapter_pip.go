@@ -27,7 +27,7 @@ func (a *PipAdapter) Exec(ctx context.Context, command string, args []string) (*
 			"command "+command+" is not forwardable to the shadow session",
 			"run it with --surface main"), nil
 	}
-	if err := a.manager.RequireReady(); err != nil {
+	if err := a.manager.EnsureReady(ctx); err != nil {
 		return notReadyEnvelope(command, err), nil
 	}
 	raw, err := a.manager.Forward(ctx, command, args)

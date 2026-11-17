@@ -11,6 +11,10 @@ no fork, upstream upgrades freely.
 cd shadow
 go build -o bin/ad.exe ./cmd/ad
 go build -o bin/ad-remote.exe ./cmd/ad-remote
+# the RDP host helper is C# (hosts mstscax); build it with csc:
+& 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe' /nologo /target:exe /platform:x64 `/
+    /r:System.Windows.Forms.dll /r:System.Drawing.dll `
+    /out:bin\ad-rdphost.exe cmd\ad-rdphost\ad-rdphost.cs
 ```
 
 Requires Go 1.26+ and `agent-desktop` on the machine (npm package
@@ -47,11 +51,13 @@ AD_AUTH_TOKEN=tok ad set-value @s2hektu6eaeu0s:e1 "hello" --surface main --auth-
 | `--surface` | — | target plane; default `pip` |
 | `--agent-desktop-bin` | `AD_AGENT_DESKTOP_BIN` | explicit agent-desktop binary |
 | `--auth-token` | `AD_AUTH_TOKEN` | grant for main-surface commands and `--target main` |
-| — | `AD_SHADOW_USERNAME` / `AD_SHADOW_PASSWORD` | credentials for `surface open` |
+| — | `AD_SHADOW_USERNAME` / `AD_SHADOW_PASSWORD` | optional credential precheck for `surface open` |
 
-`surface open` never takes a password on the command line: it comes from
-`AD_SHADOW_PASSWORD` or an interactive prompt. Commands on `--surface main`
-always require a valid auth token (`AUTH_REQUIRED` otherwise).
+`surface open` never takes a password on the command line; when
+`AD_SHADOW_PASSWORD` is set it is verified first. Child sessions auto-log
+on as the current user, so a password is not required to create one.
+Commands on `--surface main` always require a valid auth token
+(`AUTH_REQUIRED` otherwise).
 
 ## MCP
 
@@ -66,30 +72,58 @@ Tools: `desktop_status`, `desktop_snapshot`, `desktop_click`, `desktop_type`,
 `desktop_surface_open`, `desktop_surface_switch`, `desktop_surface_close`.
 Each takes a `surface` argument (default `pip`).
 
+## Shadow session
+
+`ad surface open` creates a real, isolated Windows **child session**
+(Microsoft-documented `WTSEnableChildSessions` + the mstscax ActiveX
+control's `ConnectToChildSession` property — the same mechanism Doubao's
+`pip_main.exe` uses). Flow:
+
+1. `WTSEnableChildSessions(true)` — persisted, idempotent, needs elevation.
+2. `ad` registers `ad-remote.exe --child` on the user's Run key and spawns
+   `ad-rdphost.exe`, which hosts the mstscax control; `Connect()` makes the
+   child session materialize and auto-log on as the current user (no
+   password needed).
+3. `ad-rdphost` prints `{"event":"ready","session_id":N}`; `ad` waits
+   for `ad-remote` to come up on `\\.\pipe\ad-pip-N`.
+4. pip commands then run **inside** the child session through the worker,
+   which execs `agent-desktop.exe` there.
+
+The session is persistent: `ad` exits without tearing it down, so a later
+`ad` re-attaches via the probe (`EnsureReady`). `ad surface close` removes
+the Run key, logs the session off, and `ad-rdphost` exits itself once the
+child session is gone. Verified end-to-end on Windows Server 2022:
+`list-windows`, `snapshot` (UIA tree) and `screenshot` all executed inside
+the shadow desktop.
+
+One quirk worth knowing: `put_Property("ConnectToChildSession")` alone is
+not enough — mstscax also needs the property written through the core
+`CTSPropertySet` (`SetBoolProperty`), found by scanning the COM object's
+fields; `ad-rdphost.cs` does this. And never set
+`PromptForCredentials`/explicit credentials — that kills the auto-logon
+with disconnect reason 4408.
+
 ## Current milestone status
 
 | piece | state |
 |---|---|
 | v0.1 main-surface commands | **done** — `ad` execs `agent-desktop.exe`, envelope + `data.surface` verified on notepad |
-| v0.2 probe + credentials | **done** — TermService/edition probe, `LogonUserW` precheck, marker mutex, WTS session enumeration and shadow-session detection are real; `surface open` runs the state machine up to the RPC seam |
-| v0.3 IPC | **done in isolation** — `ad-remote` worker + `u32`+JSON named-pipe protocol verified end-to-end on this host; cross-session attach pending |
-| shadow-session create | **seam** — the TermService child-session RPC is undocumented; `Create` returns `TERM_SERVICE_UNAVAILABLE` and attach of a live shadow session returns a precise not-implemented error |
-| RDP loopback / InputSink | seam (`internal/rdp`) |
+| v0.2 probe + credentials | **done** — TermService/edition probe, `LogonUserW` precheck, marker mutex, WTS session enumeration and shadow-session detection are real |
+| v0.3 IPC | **done** — `ad-remote` worker + `u32`+JSON named-pipe protocol, verified across sessions (console → child) |
+| shadow-session create | **done** — WTS child sessions via `ad-rdphost` + `ConnectToChildSession`; `surface open/close` verified end-to-end |
+| viewer / InputSink | seam (`internal/rdp`) — v0.6 streams the child desktop through the mstscax framebuffer |
 | authz gate | done — `surface switch --target main` requires `--auth-token` matching `AD_AUTH_TOKEN` |
-
-Until the RPC seam lands, `surface open` fails at `creating` with
-`TERM_SERVICE_UNAVAILABLE` and pip commands fail with `SURFACE_NOT_READY`;
-everything degrades to `--surface main`.
 
 ## Layout
 
 ```text
 cmd/ad/            CLI entry
 cmd/ad-remote/     in-session worker (named-pipe server wrapping agent-desktop)
+cmd/ad-rdphost/    C# helper hosting mstscax with ConnectToChildSession
 internal/
   desktop/         envelope, service, surface router, main/pip adapters
   surface/         lifecycle state machine (Idle→Ready→Destroy)
-  session/         probe, marker mutex, LogonUser check, WTS enum, create seam
+  session/         probe, marker mutex, LogonUser check, WTS enum, child-session APIs, rdphost spawn
   ipc/             named-pipe framing, server, client, PID check
   mcp/             MCP server + desktop_* tools
   authz/           main-desktop token gate

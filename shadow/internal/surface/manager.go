@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/meimingqi222/agent-desktop-shadow/internal/ipc"
 	"github.com/meimingqi222/agent-desktop-shadow/internal/session"
@@ -91,6 +94,29 @@ func (m *Manager) RequireReady() error {
 		"run `ad surface open` first, or pass --surface main to act on the primary desktop")
 }
 
+// EnsureReady re-attaches a later `ad` process to a shadow session an
+// earlier invocation left running. It only attaches — it never creates
+// a session on its own.
+func (m *Manager) EnsureReady(ctx context.Context) error {
+	if err := m.RequireReady(); err == nil {
+		return nil
+	}
+	m.mu.Lock()
+	idle := m.state == StateIdle
+	m.mu.Unlock()
+	if !idle {
+		return m.RequireReady()
+	}
+	cap, err := session.Probe()
+	if err != nil || cap == nil || cap.ExistingSession < 0 {
+		return m.RequireReady()
+	}
+	if _, err := m.Open(ctx, OpenOpts{}); err != nil {
+		return m.RequireReady()
+	}
+	return m.RequireReady()
+}
+
 // Open runs the lifecycle up to Ready or the first hard failure.
 func (m *Manager) Open(ctx context.Context, opts OpenOpts) (*Info, error) {
 	m.mu.Lock()
@@ -120,17 +146,15 @@ func (m *Manager) Open(ctx context.Context, opts OpenOpts) (*Info, error) {
 	}
 
 	m.setState(StateCredential)
-	if opts.Password == "" {
-		return nil, m.fail(StateCredential, codeAuthRequired,
-			"a Windows account credential is required to create the shadow session",
-			"pass --username/--password, or set AD_SHADOW_USERNAME/AD_SHADOW_PASSWORD; "+
-				"pure Windows Hello/PIN accounts need a password first")
-	}
-	domain := opts.Domain
-	if err := session.CheckCredential(opts.Username, domain, opts.Password); err != nil {
-		return nil, m.fail(StateCredential, codeCredentialRejected,
-			fmt.Sprintf("credential check failed for %s: %v", opts.Username, err),
-			"verify the Windows account password; Microsoft accounts use the full email as username")
+	// WTS child sessions auto-log on as the parent session's user, so a
+	// password is optional; when supplied it is still verified up front.
+	if opts.Password != "" {
+		domain := opts.Domain
+		if err := session.CheckCredential(opts.Username, domain, opts.Password); err != nil {
+			return nil, m.fail(StateCredential, codeCredentialRejected,
+				fmt.Sprintf("credential check failed for %s: %v", opts.Username, err),
+				"verify the Windows account password; Microsoft accounts use the full email as username")
+		}
 	}
 
 	m.setState(StateCreating)
@@ -147,9 +171,19 @@ func (m *Manager) Open(ctx context.Context, opts OpenOpts) (*Info, error) {
 	m.mu.Lock()
 	m.marker = marker
 	m.mu.Unlock()
+	// Register the in-session worker before creating the session: the
+	// child session auto-logs on as the same user, so the Run key fires
+	// there on first logon.
+	if cap.ExistingSession < 0 {
+		if werr := registerWorker(); werr != nil {
+			marker.Release()
+			return nil, m.fail(StateCreating, "INTERNAL",
+				fmt.Sprintf("worker registration failed: %v", werr), "")
+		}
+	}
 	res, err := session.Create(cap, session.CreateOpts{
 		Username: opts.Username,
-		Domain:   domain,
+		Domain:   opts.Domain,
 		Password: opts.Password,
 		Width:    opts.Width,
 		Height:   opts.Height,
@@ -175,16 +209,22 @@ func (m *Manager) Open(ctx context.Context, opts OpenOpts) (*Info, error) {
 	m.pipeName = pipeNameFor(res.SessionID)
 	m.mu.Unlock()
 
-	if res.Attached {
-		return nil, m.fail(StateConnecting, codeTermServiceUnavailable,
-			fmt.Sprintf("found live shadow session %d but the in-session worker handshake is not implemented", res.SessionID),
-			"attach lands with v0.3 — `ad surface close` releases the marker")
-	}
-
 	m.setState(StateConnecting)
-	return nil, m.fail(StateConnecting, codeTermServiceUnavailable,
-		"session created but RDP loopback connect is not implemented",
-		"the RDP loopback seam lands with v0.4 — use --surface main meanwhile")
+	// Wait for the in-session worker: the Run key fires on the child
+	// session's first logon, then ad-remote opens the pipe.
+	client, err := waitWorker(m.pipeName, workerWait)
+	if err != nil {
+		m.closeLocked()
+		return nil, m.fail(StateConnecting, codeTermServiceUnavailable,
+			fmt.Sprintf("shadow session %d created but the in-session worker did not come up: %v", res.SessionID, err),
+			"check that ad-remote.exe sits next to ad.exe; retry `ad surface open`")
+	}
+	m.mu.Lock()
+	m.client = client
+	m.setStateLocked(StateReady)
+	info := &Info{SessionID: m.sessID, Attached: res.Attached, State: m.state, Surface: "pip", PipeName: m.pipeName}
+	m.mu.Unlock()
+	return info, nil
 }
 
 // Forward sends one command to the in-session worker over IPC. It is
@@ -208,9 +248,30 @@ func (m *Manager) Close(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.setStateLocked(StateDestroying)
+	m.closeLocked()
+	m.setStateLocked(StateIdle)
+	return nil
+}
+
+// closeLocked tears down session resources. The caller must hold m.mu
+// or be on a path that has not published state yet.
+func (m *Manager) closeLocked() {
 	if m.client != nil {
 		m.client.Close()
 		m.client = nil
+	}
+	session.UnregisterWorkerRunKey()
+	session.CloseSession()
+	sessID := m.sessID
+	if sessID < 0 {
+		// This ad process never opened a session, but an earlier one
+		// may have left a live shadow session behind.
+		if cap, err := session.Probe(); err == nil && cap != nil {
+			sessID = cap.ExistingSession
+		}
+	}
+	if sessID >= 0 {
+		session.LogoffSession(uint32(sessID))
 	}
 	if m.marker != nil {
 		m.marker.Release()
@@ -218,8 +279,6 @@ func (m *Manager) Close(ctx context.Context) error {
 	}
 	m.sessID = -1
 	m.pipeName = ""
-	m.setStateLocked(StateIdle)
-	return nil
 }
 
 func (m *Manager) setState(s State) {
@@ -260,4 +319,44 @@ func pipeNameFor(sessionID int) string {
 // fan-out.
 type Response struct {
 	Payload json.RawMessage
+}
+
+const workerWait = 60 * time.Second
+
+// registerWorker puts ad-remote.exe (expected next to ad.exe) on the
+// current user's Run key with --child so it only serves inside the
+// shadow session.
+func registerWorker() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	remote := filepath.Join(filepath.Dir(exe), "ad-remote.exe")
+	if _, err := os.Stat(remote); err != nil {
+		return fmt.Errorf("ad-remote.exe not found at %s", remote)
+	}
+	// No --host-pid: ad invocations are separate processes and a later
+	// `ad` must be able to re-attach to a worker launched for an
+	// earlier one.
+	args := fmt.Sprintf(`"%s" --child`, remote)
+	if bin := os.Getenv("AD_AGENT_DESKTOP_BIN"); bin != "" {
+		args += fmt.Sprintf(` --agent-desktop-bin "%s"`, bin)
+	}
+	return session.RegisterWorkerRunKey(args)
+}
+
+// waitWorker polls the worker pipe until the in-session ad-remote
+// answers or the timeout expires.
+func waitWorker(pipeName string, timeout time.Duration) (*ipc.Client, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		c, err := ipc.Dial(pipeName)
+		if err == nil {
+			return c, nil
+		}
+		lastErr = err
+		time.Sleep(500 * time.Millisecond)
+	}
+	return nil, fmt.Errorf("no worker on %s after %s: %v", pipeName, timeout, lastErr)
 }

@@ -207,15 +207,12 @@ func runSurface(ctx context.Context, svc *desktop.Service, cfg *cliConfig, args 
 		if opts.Username == "" {
 			opts.Username = os.Getenv("USERNAME")
 		}
+		// A password is optional: WTS child sessions auto-log on as the
+		// parent session's user. When supplied it is verified first.
 		if opts.Password == "" {
-			pw, err := promptPassword()
-			if err != nil {
-				desktop.Write(desktop.NewError("surface open", desktop.CodeAuthRequired,
-					"a Windows account credential is required to create the shadow session",
-					"set AD_SHADOW_PASSWORD, or run interactively to be prompted"))
-				return desktop.ExitError
+			if pw, err := promptPassword(); err == nil && pw != "" {
+				opts.Password = pw
 			}
-			opts.Password = pw
 		}
 		info, err := svc.Manager().Open(ctx, opts)
 		if err != nil {
