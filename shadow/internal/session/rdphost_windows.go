@@ -43,8 +43,9 @@ type rdpHostEvent struct {
 
 // spawnRdpHost locates and launches ad-rdphost.exe. AD_RDPHOST_BIN
 // overrides the lookup; otherwise the helper is expected next to the
-// running binary (both live in shadow/bin).
-func spawnRdpHost() (*RdpHost, error) {
+// running binary (both live in shadow/bin). width/height of 0 leave
+// the helper's 1600x900 default.
+func spawnRdpHost(width, height int) (*RdpHost, error) {
 	path := os.Getenv("AD_RDPHOST_BIN")
 	if path == "" {
 		exe, err := os.Executable()
@@ -57,6 +58,12 @@ func spawnRdpHost() (*RdpHost, error) {
 		return nil, fmt.Errorf("ad-rdphost.exe not found at %s: %w", path, err)
 	}
 	cmd := exec.Command(path)
+	if width > 0 {
+		cmd.Env = append(os.Environ(), fmt.Sprintf("AD_DISPLAY_W=%d", width))
+	}
+	if height > 0 {
+		cmd.Env = append(os.Environ(), fmt.Sprintf("AD_DISPLAY_H=%d", height))
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

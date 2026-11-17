@@ -47,11 +47,11 @@ func Create(cap *Capability, opts CreateOpts) (*CreateResult, error) {
 		// child is already anchored by the earlier ad-rdphost, and
 		// stacking another RDP client gains nothing.
 		if shadowDisconnected(cap.ExistingSession) {
-			spawnAttachHost()
+			spawnAttachHost(0, 0)
 		}
 		return &CreateResult{SessionID: cap.ExistingSession, Attached: true}, nil
 	}
-	host, err := spawnRdpHost()
+	host, err := spawnRdpHost(opts.Width, opts.Height)
 	if err != nil {
 		return nil, err
 	}
@@ -84,8 +84,8 @@ func shadowDisconnected(sessionID int) bool {
 
 // spawnAttachHost starts an ad-rdphost to re-anchor a disconnected
 // child session and tracks it for CloseSession.
-func spawnAttachHost() {
-	host, err := spawnRdpHost()
+func spawnAttachHost(width, height int) {
+	host, err := spawnRdpHost(width, height)
 	if err != nil {
 		return
 	}
