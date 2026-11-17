@@ -52,18 +52,35 @@ var closerProcWhitelist = map[string]bool{
 	"dw20.exe":           true,
 }
 
-// Substrings of dialog titles that identify system error UI, matched
-// case-insensitively on any owner process.
-var closerTitleWhitelist = []string{
-	"windows error reporting",
-	"windows - application error",
-	"system error",
-	"exception processing message",
+// System processes allowed to own a dialog closed by title match. A
+// user application could reuse a title like "X - System Error", so
+// generic titles only close when a system process raised them.
+var closerSystemOwners = map[string]bool{
+	"csrss.exe":    true,
+	"svchost.exe":  true,
+	"smss.exe":     true,
+	"wininit.exe":  true,
+	"winlogon.exe": true,
+}
+
+// Dialog titles that identify system UI whatever process owns them
+// (the .NET unhandled-exception dialog belongs to the faulting app but
+// is itself system error UI). Matched case-insensitively.
+var closerTitleAnyOwner = []string{
 	"microsoft .net framework",
 	"bad image",
+	"损坏的图像",
+	"windows error reporting",
+}
+
+// Dialog titles that only count as system error UI when a system
+// process owns the dialog.
+var closerTitleSystemOwner = []string{
+	"system error",
+	"exception processing message",
+	"windows - application error",
 	"应用程序错误",
 	"系统错误",
-	"损坏的图像",
 	"错误报告",
 }
 
@@ -78,7 +95,8 @@ var closerButtonPrefs = []string{
 	"close", "关闭",
 	"ok", "确定",
 	"quit", "退出",
-	"continue", "继续",
+	// "Continue" is deliberately absent: on an unhandled-exception
+	// dialog it would swallow the fault and keep a broken app running.
 }
 
 func startDialogCloser(ctx context.Context) {
@@ -100,13 +118,28 @@ func startDialogCloser(ctx context.Context) {
 	}()
 }
 
-func sweepDialogs(recent map[uintptr]time.Time) {
-	var tops []uintptr
-	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
-		tops = append(tops, hwnd)
+// EnumWindows/EnumChildWindows callbacks are allocated once: each
+// syscall.NewCallback consumes a process-wide callback slot that is
+// never released, so creating them per sweep would exhaust the table.
+// The closer is the only goroutine that runs them, and never
+// concurrently with itself.
+var (
+	enumTopSink []uintptr
+	enumTopCB   = syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
+		enumTopSink = append(enumTopSink, hwnd)
 		return 1
 	})
-	procEnumWindows.Call(cb, 0)
+	enumChildSink []uintptr
+	enumChildCB   = syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
+		enumChildSink = append(enumChildSink, hwnd)
+		return 1
+	})
+)
+
+func sweepDialogs(recent map[uintptr]time.Time) {
+	enumTopSink = enumTopSink[:0]
+	procEnumWindows.Call(enumTopCB, 0)
+	tops := enumTopSink
 
 	now := time.Now()
 	for hwnd, at := range recent {
@@ -140,11 +173,20 @@ func isDialog(hwnd uintptr) bool {
 }
 
 func closable(hwnd uintptr, title string) bool {
-	if _, ok := closerProcWhitelist[windowImageName(hwnd)]; ok {
+	owner := windowImageName(hwnd)
+	if closerProcWhitelist[owner] {
 		return true
 	}
 	low := strings.ToLower(title)
-	for _, want := range closerTitleWhitelist {
+	for _, want := range closerTitleAnyOwner {
+		if strings.Contains(low, want) {
+			return true
+		}
+	}
+	if !closerSystemOwners[owner] {
+		return false
+	}
+	for _, want := range closerTitleSystemOwner {
 		if strings.Contains(low, want) {
 			return true
 		}
@@ -155,12 +197,9 @@ func closable(hwnd uintptr, title string) bool {
 // clickDismiss presses the best dismiss button on the dialog. A button
 // is only pressed when its caption is on the preference list.
 func clickDismiss(hwnd uintptr) bool {
-	var kids []uintptr
-	cb := syscall.NewCallback(func(child uintptr, _ uintptr) uintptr {
-		kids = append(kids, child)
-		return 1
-	})
-	procEnumChildWindows.Call(hwnd, cb, 0)
+	enumChildSink = enumChildSink[:0]
+	procEnumChildWindows.Call(hwnd, enumChildCB, 0)
+	kids := enumChildSink
 
 	type cand struct {
 		hwnd uintptr
