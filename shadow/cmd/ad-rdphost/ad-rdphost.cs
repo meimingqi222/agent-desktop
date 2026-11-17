@@ -6,7 +6,15 @@
 //   out: {"event":"ready","session_id":N}
 //   out: {"event":"error","message":"..."}
 //   in : {"cmd":"shutdown"}   -> Disconnect + exit
+//   in : {"cmd":"show"|"hide"} -> toggle the viewer window
+//
+// The same JSON-line commands are also served on the named pipe
+// \\.\pipe\ad-rdphost-<parentSessionId> so any later `ad` invocation
+// can toggle the viewer after the spawning process has exited.
 using System;
+using System.Diagnostics;
+using System.IO;
+using System.IO.Pipes;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -177,6 +185,7 @@ static class P {
     [DllImport("wtsapi32.dll")] static extern bool WTSIsChildSessionsEnabled();
     [DllImport("ole32.dll")] static extern int OleInitialize(IntPtr r);
     [DllImport("oleaut32.dll")] static extern int VariantClear(IntPtr v);
+    [DllImport("kernel32.dll")] static extern uint SetErrorMode(uint mode);
 
     static IntPtr BoolVariant(bool v) {
         IntPtr p = Marshal.AllocCoTaskMem(16);
@@ -188,6 +197,10 @@ static class P {
 
     [STAThread]
     static int Main() {
+        // Suppress csrss hard-error popups ("Exception Processing
+        // Message"): a headless helper must never block on a modal
+        // error dialog on the user's desktop.
+        SetErrorMode(0x0001 | 0x0002 | 0x8000);
         OleInitialize(IntPtr.Zero);
         if (!WTSEnableChildSessions(true)) { EmitErr("WTSEnableChildSessions failed"); return 1; }
 
@@ -200,12 +213,17 @@ static class P {
             if (dw <= 0) dw = 1600;
             if (dh <= 0) dh = 900;
         }
-        var form = new Form { Width = dw, Height = dh, Text = "ad-rdphost" };
+        var form = new Form { Width = dw, Height = dh, Text = "ad shadow desktop", StartPosition = FormStartPosition.CenterScreen };
+        theForm = form;
         var ax = new RdpAx { Dock = DockStyle.Fill };
         ((System.ComponentModel.ISupportInitialize)ax).BeginInit();
         form.Controls.Add(ax);
         ((System.ComponentModel.ISupportInitialize)ax).EndInit();
-        form.Show();
+        // The mstscax control inside the form renders the child
+        // session's desktop live: showing the form IS the viewer. It
+        // stays hidden until `ad surface viewer` (or --viewer at open)
+        // asks for it via the control pipe.
+        if (Environment.GetEnvironmentVariable("AD_VIEWER") == "1") form.Show();
 
         object ocx = ax.GetOcx();
 
@@ -286,12 +304,64 @@ static class P {
         new Thread(WaitChild) { IsBackground = true }.Start();
         new Thread(ReadCommands) { IsBackground = true }.Start();
         new Thread(WatchChild) { IsBackground = true }.Start();
+        new Thread(PipeServer) { IsBackground = true }.Start();
         Application.Run(form);
         return 0;
     }
 
     static volatile bool childReady;
     static int dispidDisconnect = -1;
+    static Form theForm;
+
+    static void DoShutdown() {
+        try {
+            var dd = (IDisp)dispObj;
+            IntPtr dp = Marshal.AllocCoTaskMem(32);
+            for (int i = 0; i < 32; i++) Marshal.WriteByte(dp, i, 0);
+            dd.Invoke(dispidDisconnect, ref egRef, 0, 1, dp, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        } catch {}
+        Application.Exit();
+    }
+
+    static void OnUI(Action a) {
+        try {
+            if (theForm != null && theForm.InvokeRequired) theForm.Invoke(a);
+            else a();
+        } catch {}
+    }
+
+    // Dispatch handles one {"cmd":...} line from stdin or the control
+    // pipe and returns the JSON ack written back to pipe clients.
+    static string Dispatch(string line) {
+        if (line == null) return "{\"ok\":false,\"error\":\"empty\"}";
+        if (line.Contains("\"shutdown\"")) { DoShutdown(); return "{\"ok\":true}"; }
+        if (line.Contains("\"show\"")) {
+            OnUI(() => { theForm.Show(); theForm.WindowState = FormWindowState.Normal; theForm.Activate(); });
+            return "{\"ok\":true}";
+        }
+        if (line.Contains("\"hide\"")) {
+            OnUI(() => theForm.Hide());
+            return "{\"ok\":true}";
+        }
+        return "{\"ok\":false,\"error\":\"unknown command\"}";
+    }
+
+    // PipeServer accepts viewer-control commands from any ad process of
+    // this parent session, one connection at a time.
+    static void PipeServer() {
+        string name = "ad-rdphost-" + Process.GetCurrentProcess().SessionId;
+        for (;;) {
+            try {
+                using (var pipe = new NamedPipeServerStream(name, PipeDirection.InOut, 1)) {
+                    pipe.WaitForConnection();
+                    var r = new StreamReader(pipe);
+                    var w = new StreamWriter(pipe);
+                    w.AutoFlush = true;
+                    w.WriteLine(Dispatch(r.ReadLine()));
+                }
+            } catch { Thread.Sleep(200); }
+        }
+    }
 
     static void EmitErr(string m) {
         Console.WriteLine("{\"event\":\"error\",\"message\":\"" + m.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"}");
@@ -317,13 +387,7 @@ static class P {
         string line;
         while ((line = Console.In.ReadLine()) != null) {
             if (line.Contains("\"shutdown\"")) {
-                try {
-                    var dd = (IDisp)dispObj;
-                    IntPtr dp = Marshal.AllocCoTaskMem(32);
-                    for (int i = 0; i < 32; i++) Marshal.WriteByte(dp, i, 0);
-                    dd.Invoke(dispidDisconnect, ref egRef, 0, 1, dp, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
-                } catch {}
-                Application.Exit();
+                Dispatch(line);
                 return;
             }
         }

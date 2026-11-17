@@ -30,6 +30,7 @@ ad surface open [--display WxH] [--viewer] [--username U] [--domain D]
 ad surface switch --target main|pip [--auth-token T]
 ad surface close
 ad surface status
+ad surface viewer [--on|--off]
 ad mcp serve [--stdio | --sse addr]
 ```
 
@@ -96,6 +97,21 @@ child session is gone. Verified end-to-end on Windows Server 2022:
 `list-windows`, `snapshot` (UIA tree) and `screenshot` all executed inside
 the shadow desktop.
 
+### Viewer
+
+`ad-rdphost` already hosts the mstscax control, which renders the child
+desktop natively — showing its window IS the live view into the shadow
+session, no extra protocol needed. The window is hidden by default and
+toggled per parent session:
+
+- `ad surface viewer` / `ad surface viewer off` — show / hide the window
+- `ad surface open --viewer` — show it as soon as the session is up
+
+Toggle commands go over `\\.\pipe\ad-rdphost-<parentSessionId>`, so any
+later `ad` invocation can drive the viewer even though the helper was
+spawned by an earlier one. The window is interactive: clicks and keys
+inside it reach the shadow desktop (a manual take-over path).
+
 One quirk worth knowing: `put_Property("ConnectToChildSession")` alone is
 not enough — mstscax also needs the property written through the core
 `CTSPropertySet` (`SetBoolProperty`), found by scanning the COM object's
@@ -111,7 +127,8 @@ with disconnect reason 4408.
 | v0.2 probe + credentials | **done** — TermService/edition probe, `LogonUserW` precheck, marker mutex, WTS session enumeration and shadow-session detection are real |
 | v0.3 IPC | **done** — `ad-remote` worker + `u32`+JSON named-pipe protocol, verified across sessions (console → child) |
 | shadow-session create | **done** — WTS child sessions via `ad-rdphost` + `ConnectToChildSession`; `surface open/close` verified end-to-end |
-| viewer / InputSink | seam (`internal/rdp`) — v0.6 streams the child desktop through the mstscax framebuffer |
+| viewer | **done** — `ad surface viewer` toggles the live shadow-desktop window rendered by mstscax inside `ad-rdphost` |
+| InputSink | seam (`internal/rdp`) — not needed: input reaches the child session through the in-session worker |
 | authz gate | done — `surface switch --target main` requires `--auth-token` matching `AD_AUTH_TOKEN` |
 
 ## Layout

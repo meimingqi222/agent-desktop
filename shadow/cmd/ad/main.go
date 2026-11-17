@@ -27,6 +27,7 @@ usage:
   ad surface switch --target main|pip [--auth-token T]
   ad surface close
   ad surface status
+  ad surface viewer [--on|--off]      show/hide the shadow-desktop window
   ad mcp serve [--stdio | --sse addr]
 
 global flags:
@@ -273,6 +274,33 @@ func runSurface(ctx context.Context, svc *desktop.Service, cfg *cliConfig, args 
 		env, err := desktop.NewData("surface status", svc.Manager().Current())
 		if err != nil {
 			return failInternal("surface status", err)
+		}
+		desktop.Write(env)
+		return desktop.ExitOK
+
+	case "viewer":
+		show := true
+		for _, a := range subArgs {
+			switch a {
+			case "off", "--off", "hide":
+				show = false
+			case "on", "--on", "show":
+				show = true
+			default:
+				return failArgs("surface viewer", "unknown flag "+a)
+			}
+		}
+		if err := svc.Manager().Viewer(ctx, show); err != nil {
+			writeStateError("surface viewer", err)
+			return desktop.ExitError
+		}
+		state := "hidden"
+		if show {
+			state = "shown"
+		}
+		env, err := desktop.NewData("surface viewer", map[string]string{"viewer": state})
+		if err != nil {
+			return failInternal("surface viewer", err)
 		}
 		desktop.Write(env)
 		return desktop.ExitOK

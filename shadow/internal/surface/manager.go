@@ -210,6 +210,7 @@ func (m *Manager) Open(ctx context.Context, opts OpenOpts) (*Info, error) {
 		Password: opts.Password,
 		Width:    opts.Width,
 		Height:   opts.Height,
+		Viewer:   opts.Viewer,
 	})
 	if err != nil {
 		marker.Release()
@@ -248,7 +249,36 @@ func (m *Manager) Open(ctx context.Context, opts OpenOpts) (*Info, error) {
 	m.setStateLocked(StateReady)
 	info := &Info{SessionID: m.sessID, Attached: m.attached, State: m.state, Surface: "pip", PipeName: m.pipeName}
 	m.mu.Unlock()
+	if opts.Viewer && res.Attached {
+		// A fresh spawn already shows the window via AD_VIEWER; an
+		// attach keeps the earlier ad-rdphost, whose window is
+		// toggled through its control pipe.
+		if verr := session.ViewerCommand("show"); verr != nil {
+			m.mu.Lock()
+			m.lastErr = fmt.Sprintf("viewer show failed: %v", verr)
+			m.mu.Unlock()
+		}
+	}
 	return info, nil
+}
+
+// Viewer toggles the shadow-desktop window ad-rdphost renders on the
+// parent session. It requires a live shadow session and attaches to
+// one left running by an earlier `ad` when needed.
+func (m *Manager) Viewer(ctx context.Context, show bool) error {
+	if err := m.EnsureReady(ctx); err != nil {
+		return err
+	}
+	cmd := "hide"
+	if show {
+		cmd = "show"
+	}
+	if err := session.ViewerCommand(cmd); err != nil {
+		return stateError(StateReady, codeSurfaceNotReady,
+			fmt.Sprintf("viewer %s failed: %v", cmd, err),
+			"the ad-rdphost helper may be gone; run `ad surface open` again")
+	}
+	return nil
 }
 
 // Forward sends one command to the in-session worker over IPC. It is

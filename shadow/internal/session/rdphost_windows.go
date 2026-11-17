@@ -45,8 +45,9 @@ type rdpHostEvent struct {
 // spawnRdpHost locates and launches ad-rdphost.exe. AD_RDPHOST_BIN
 // overrides the lookup; otherwise the helper is expected next to the
 // running binary (both live in shadow/bin). width/height of 0 leave
-// the helper's 1600x900 default.
-func spawnRdpHost(width, height int) (*RdpHost, error) {
+// the helper's 1600x900 default. viewer shows the shadow desktop
+// window from the start instead of waiting for a "show" command.
+func spawnRdpHost(width, height int, viewer bool) (*RdpHost, error) {
 	path := os.Getenv("AD_RDPHOST_BIN")
 	if path == "" {
 		exe, err := os.Executable()
@@ -62,7 +63,8 @@ func spawnRdpHost(width, height int) (*RdpHost, error) {
 	// Drop any inherited AD_DISPLAY_* so a stale value can never win over
 	// the dimensions requested on this open.
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "AD_DISPLAY_W=") || strings.HasPrefix(kv, "AD_DISPLAY_H=") {
+		if strings.HasPrefix(kv, "AD_DISPLAY_W=") || strings.HasPrefix(kv, "AD_DISPLAY_H=") ||
+			strings.HasPrefix(kv, "AD_VIEWER=") {
 			continue
 		}
 		cmd.Env = append(cmd.Env, kv)
@@ -72,6 +74,9 @@ func spawnRdpHost(width, height int) (*RdpHost, error) {
 	}
 	if height > 0 {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("AD_DISPLAY_H=%d", height))
+	}
+	if viewer {
+		cmd.Env = append(cmd.Env, "AD_VIEWER=1")
 	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
