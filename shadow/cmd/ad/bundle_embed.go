@@ -36,8 +36,16 @@ func extractBundledHelpers() {
 		if cur, err := os.ReadFile(dst); err == nil && bytes.Equal(cur, data) {
 			continue
 		}
-		if err := os.WriteFile(dst, data, 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "ad: cannot write %s: %v\n", dst, err)
+		// Write to a temp file then rename: concurrent first runs must
+		// never observe a truncated helper. If the rename fails (the
+		// existing exe is in use), the old complete file is still valid.
+		tmp := dst + ".tmp"
+		if err := os.WriteFile(tmp, data, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "ad: cannot write %s: %v\n", tmp, err)
+			continue
+		}
+		if err := os.Rename(tmp, dst); err != nil {
+			os.Remove(tmp)
 		}
 	}
 }
