@@ -100,6 +100,7 @@ func (a *MainAdapter) Exec(ctx context.Context, command string, args []string) (
 func (a *MainAdapter) ExecWithStdin(ctx context.Context, command string, args []string, stdin []byte) (*Envelope, error) {
 	argv := append([]string{command}, args...)
 	cmd := exec.CommandContext(ctx, a.binaryPath, argv...)
+	hideConsoleWindow(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

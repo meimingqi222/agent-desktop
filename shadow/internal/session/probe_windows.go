@@ -5,13 +5,12 @@ package session
 import (
 	"fmt"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
-	"golang.org/x/sys/windows/svc"
-	"golang.org/x/sys/windows/svc/mgr"
 )
 
 func probe() (*Capability, error) {
-	cap := &Capability{Platform: "windows", ExistingSession: -1}
+	cap := &Capability{Platform: "windows", ExistingSession: -1, ForeignChildSession: -1}
 
 	edition, err := editionID()
 	if err != nil {
@@ -36,9 +35,15 @@ func probe() (*Capability, error) {
 		cap.TermServiceUp = true
 	}
 
-	if id, ok := findShadowSession(); ok {
-		cap.ExistingSession = id
-		cap.MarkerHeld = MarkerHeld()
+	cap.MarkerHeld = MarkerHeld()
+	if child := probeChildSession(); child.Exists {
+		if child.Owned {
+			cap.ExistingSession = child.ID
+		} else {
+			cap.ForeignChildSession = child.ID
+			cap.Reasons = append(cap.Reasons,
+				fmt.Sprintf("child session %d exists but was not created by ad", child.ID))
+		}
 	}
 
 	cap.Supported = cap.ChildSessionOK && cap.TermServiceUp
@@ -69,19 +74,23 @@ func isHomeEdition(edition string) bool {
 }
 
 func termServiceRunning() (bool, error) {
-	m, err := mgr.Connect()
+	manager, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
 	if err != nil {
 		return false, err
 	}
-	defer m.Disconnect()
-	s, err := m.OpenService("TermService")
+	defer windows.CloseServiceHandle(manager)
+	name, err := windows.UTF16PtrFromString("TermService")
 	if err != nil {
 		return false, err
 	}
-	defer s.Close()
-	st, err := s.Query()
+	service, err := windows.OpenService(manager, name, windows.SERVICE_QUERY_STATUS)
 	if err != nil {
 		return false, err
 	}
-	return st.State == svc.Running, nil
+	defer windows.CloseServiceHandle(service)
+	var status windows.SERVICE_STATUS
+	if err := windows.QueryServiceStatus(service, &status); err != nil {
+		return false, err
+	}
+	return status.CurrentState == windows.SERVICE_RUNNING, nil
 }

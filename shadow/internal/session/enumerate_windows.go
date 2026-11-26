@@ -3,6 +3,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"unsafe"
 
@@ -46,6 +47,7 @@ type SessionInfo struct {
 const (
 	wtsCurrentServerHandle = 0
 	wtsUserName            = 5
+	wtsWinStationName      = 6
 )
 
 type wtsSessionInfo struct {
@@ -69,8 +71,7 @@ func ListSessions() ([]SessionInfo, error) {
 	}
 	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(infos)))
 
-	current, _ := currentSessionID()
-	user, _ := currentUserName()
+	childID, _ := ChildSessionID()
 
 	raw := unsafe.Slice(infos, count)
 	out := make([]SessionInfo, 0, len(raw))
@@ -85,18 +86,40 @@ func ListSessions() ([]SessionInfo, error) {
 		if u, err := sessionUserName(si.SessionID); err == nil {
 			s.User = u
 		}
-		s.IsShadow = si.SessionID != current && s.User != "" && s.User == user &&
-			(si.State == WTSActive || si.State == WTSConnected || si.State == WTSDisconnected)
+		s.IsShadow = childID != 0 && si.SessionID == childID
 		out = append(out, s)
 	}
 	return out, nil
 }
 
 func sessionUserName(sessionID uint32) (string, error) {
+	return sessionInfoString(sessionID, wtsUserName)
+}
+
+func sessionWinStationName(sessionID uint32) (string, error) {
+	name, queryErr := sessionInfoString(sessionID, wtsWinStationName)
+	if queryErr == nil && name != "" {
+		return name, nil
+	}
+	infos, err := ListSessions()
+	if err == nil {
+		for _, info := range infos {
+			if info.ID == sessionID && info.Name != "" {
+				return info.Name, nil
+			}
+		}
+	}
+	if queryErr != nil {
+		return "", queryErr
+	}
+	return "", fmt.Errorf("session %d not found", sessionID)
+}
+
+func sessionInfoString(sessionID uint32, class uint32) (string, error) {
 	var buf *uint16
 	var bytes uint32
 	r, _, err := procWTSQuerySessionInfoW.Call(
-		uintptr(wtsCurrentServerHandle), uintptr(sessionID), uintptr(wtsUserName),
+		uintptr(wtsCurrentServerHandle), uintptr(sessionID), uintptr(class),
 		uintptr(unsafe.Pointer(&buf)), uintptr(unsafe.Pointer(&bytes)))
 	if r == 0 {
 		return "", err
@@ -152,6 +175,22 @@ func connectStateName(s WTSConnectState) string {
 	default:
 		return "Unknown"
 	}
+}
+
+func childSessionAlive(sessionID uint32) bool {
+	if name, err := sessionInfoString(sessionID, wtsWinStationName); err == nil && name != "" {
+		return true
+	}
+	infos, err := ListSessions()
+	if err != nil {
+		return false
+	}
+	for _, info := range infos {
+		if info.ID == sessionID {
+			return true
+		}
+	}
+	return false
 }
 
 // findShadowSession reports the id of a candidate shadow session: a

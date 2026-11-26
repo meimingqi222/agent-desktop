@@ -33,9 +33,11 @@ func NewService(cfg Config) (*Service, error) {
 		def = SurfacePip
 	}
 	svc := &Service{manager: surface.NewManager(), gate: authz.NewGate(""), surface: def}
+	svc.manager.SetAgentDesktopBin(cfg.BinaryPath)
 	main, err := NewMainAdapter(cfg.BinaryPath)
 	if err == nil {
 		svc.main = main
+		svc.manager.SetAgentDesktopBin(main.binaryPath)
 	}
 	svc.pip = NewPipAdapter(svc.manager)
 	return svc, nil

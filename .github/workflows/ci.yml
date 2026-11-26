@@ -444,6 +444,12 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
+      - name: Install Go toolchain
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: shadow/go.mod
+          cache-dependency-path: shadow/go.sum
+
       # Core resolves its home directory from HOME, then USERPROFILE (crates/core/src/refs/mod.rs), so the lane points both at a throwaway directory.
       - name: Isolate HOME for the whole lane
         shell: pwsh
@@ -556,6 +562,23 @@ jobs:
 
       - name: Binary command tests
         run: cargo test --locked -p agent-desktop
+
+      - name: Shadow host Go unit tests
+        working-directory: shadow
+        run: go test ./...
+
+      - name: Shadow host build smoke
+        shell: powershell
+        working-directory: shadow
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $parseErrors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\scripts\smoke-windows.ps1).Path, [ref]$null, [ref]$parseErrors)
+          if ($parseErrors) {
+            $parseErrors | ForEach-Object { Write-Host $_.Message }
+            exit 1
+          }
 
       - name: FFI integration tests
         run: cargo test --locked -p agent-desktop-ffi --tests

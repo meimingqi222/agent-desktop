@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -46,10 +47,23 @@ func Create(cap *Capability, opts CreateOpts) (*CreateResult, error) {
 	if cap.ExistingSession >= 0 {
 		// Reconnect only when the session is disconnected: an Active
 		// child is already anchored by the earlier ad-rdphost, and
-		// stacking another RDP client gains nothing.
+		// stacking another RDP client gains nothing. Unlike the old
+		// fire-and-forget path, a failed re-anchor is surfaced to the
+		// caller instead of turning into a worker-timeout mystery.
 		if shadowDisconnected(cap.ExistingSession) {
-			spawnAttachHost(0, 0, opts.Viewer)
+			host, err := spawnRdpHost(opts.Width, opts.Height, opts.Viewer)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := host.WaitReady(attachReadyTimeout); err != nil {
+				host.Close()
+				return nil, err
+			}
+			currentHostMu.Lock()
+			currentHost = host
+			currentHostMu.Unlock()
 		}
+		_ = recordChildOwnership(cap.ExistingSession)
 		return &CreateResult{SessionID: cap.ExistingSession, Attached: true}, nil
 	}
 	host, err := spawnRdpHost(opts.Width, opts.Height, opts.Viewer)
@@ -61,10 +75,33 @@ func Create(cap *Capability, opts CreateOpts) (*CreateResult, error) {
 		host.Close()
 		return nil, err
 	}
+	if err := recordChildOwnershipEventually(id); err != nil {
+		host.Close()
+		_ = LogoffSession(uint32(id))
+		return nil, fmt.Errorf("record shadow session ownership: %w", err)
+	}
 	currentHostMu.Lock()
 	currentHost = host
 	currentHostMu.Unlock()
 	return &CreateResult{SessionID: id, Attached: false}, nil
+}
+
+// recordChildOwnershipEventually absorbs the short lag between
+// WTSGetChildSessionId first reporting a child and that child appearing
+// in WTSEnumerateSessions with its WinStation name.
+func recordChildOwnershipEventually(sessionID int) error {
+	deadline := time.Now().Add(5 * time.Second)
+	var err error
+	for {
+		err = recordChildOwnership(sessionID)
+		if err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // shadowDisconnected reports whether the given session id is a
@@ -81,22 +118,6 @@ func shadowDisconnected(sessionID int) bool {
 		}
 	}
 	return false
-}
-
-// spawnAttachHost starts an ad-rdphost to re-anchor a disconnected
-// child session and tracks it for CloseSession.
-func spawnAttachHost(width, height int, viewer bool) {
-	host, err := spawnRdpHost(width, height, viewer)
-	if err != nil {
-		return
-	}
-	if _, err := host.WaitReady(attachReadyTimeout); err != nil {
-		host.Close()
-		return
-	}
-	currentHostMu.Lock()
-	currentHost = host
-	currentHostMu.Unlock()
 }
 
 var (

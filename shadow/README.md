@@ -7,19 +7,40 @@ no fork, upstream upgrades freely.
 
 ## Build
 
-```sh
+```powershell
 cd shadow
-go build -o bin/ad.exe ./cmd/ad
-go build -o bin/ad-remote.exe ./cmd/ad-remote
-# the RDP host helper is C# (hosts mstscax); build it with csc:
-& 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe' /nologo /target:exe /platform:x64 `/
-    /r:System.Windows.Forms.dll /r:System.Drawing.dll `
-    /out:bin\ad-rdphost.exe cmd\ad-rdphost\ad-rdphost.cs
+scripts\build.ps1
 ```
+
+The script builds `bin\ad.exe` with `ad-remote.exe` and `ad-rdphost.exe`
+embedded, and also leaves both helpers beside it for local debugging.
+`ad-remote` is built as a Windows GUI subsystem binary so neither the
+long-lived worker nor the per-command `agent-desktop.exe` child processes
+create terminal windows inside the shadow session.
 
 Requires Go 1.26+ and `agent-desktop` on the machine (npm package
 `agent-desktop`, or set `AD_AGENT_DESKTOP_BIN` / `--agent-desktop-bin` to the
 binary path).
+
+## Test
+
+```powershell
+go test ./...
+scripts\smoke-windows.ps1 -AgentDesktopBin 'C:\path\to\agent-desktop-win32-x64.exe'
+```
+
+The smoke script creates a real child session, verifies status and window
+enumeration, launches the repository fixture application inside it, snapshots
+and screenshots it, then closes the session and checks Run-key and durable
+ownership-record cleanup. When a shadow session already exists it attaches
+without closing it; pass
+`-CloseExisting` only when that existing session is disposable. Clipboard
+redirection isolation is opt-in because a regression could overwrite the
+parent clipboard:
+
+```powershell
+scripts\smoke-windows.ps1 -AgentDesktopBin 'C:\path\to\agent-desktop-win32-x64.exe' -TestClipboard
+```
 
 ## CLI
 
@@ -114,22 +135,38 @@ expected as siblings).
 control's `ConnectToChildSession` property — the same mechanism Doubao's
 `pip_main.exe` uses). Flow:
 
-1. `WTSEnableChildSessions(true)` — persisted, idempotent, needs elevation.
+1. `ad-rdphost` calls `WTSEnableChildSessions(true)`. The setting is
+   persistent and idempotent; enabling it for the first time can require
+   elevation, depending on the host.
 2. `ad` registers `ad-remote.exe --child` on the user's Run key and spawns
    `ad-rdphost.exe`, which hosts the mstscax control; `Connect()` makes the
    child session materialize and auto-log on as the current user (no
    password needed).
-3. `ad-rdphost` prints `{"event":"ready","session_id":N}`; `ad` waits
-   for `ad-remote` to come up on `\\.\pipe\ad-pip-N`.
-4. pip commands then run **inside** the child session through the worker,
+3. At the child session's first logon the Run-key instance starts as a
+   supervisor, and that supervisor starts the pipe worker. Splitting the two
+   lets each half restart the other after a crash without cross-session
+   process injection.
+4. `ad-rdphost` prints `{"event":"ready","session_id":N}`; `ad` waits
+   for the worker to answer on `\\.\pipe\ad-pip-N`.
+5. pip commands then run **inside** the child session through the worker,
    which execs `agent-desktop.exe` there.
 
+The RDP client redirection surface is deliberately narrowed before connect:
+clipboard, drives, ports, printers, smart cards, Plug and Play devices, and
+dynamic device redirection are disabled. Child-session clipboard contents do
+not overwrite the parent session's clipboard.
+
 The session is persistent: `ad` exits without tearing it down, so a later
-`ad` re-attaches via the probe (`EnsureReady`). `ad surface close` removes
-the Run key, logs the session off, and `ad-rdphost` exits itself once the
-child session is gone. Verified end-to-end on Windows Server 2022:
-`list-windows`, `snapshot` (UIA tree) and `screenshot` all executed inside
-the shadow desktop.
+`ad` re-attaches through the real parent-child relationship reported by
+`WTSGetChildSessionId`. Creation also writes a small ownership record under
+`HKCU\Software\AdShadow` with the child session id and initial WinStation
+name, so a later `ad` can still recognize its own child after the RDP host
+or worker processes crash. `ad surface close` removes the Run key and that
+record, closes the RDP anchor, and logs off only that owned child session;
+a foreign child session is never hijacked. Verified end-to-end
+on Windows 11 Pro as an unprivileged user inside an RDP parent session:
+`list-windows`, `snapshot` (UIA tree), `set-value`, physical `type`,
+clipboard isolation, and `screenshot` all executed inside the shadow desktop.
 
 ### Dialog auto-closer
 
@@ -160,12 +197,11 @@ later `ad` invocation can drive the viewer even though the helper was
 spawned by an earlier one. The window is interactive: clicks and keys
 inside it reach the shadow desktop (a manual take-over path).
 
-One quirk worth knowing: `put_Property("ConnectToChildSession")` alone is
-not enough — mstscax also needs the property written through the core
-`CTSPropertySet` (`SetBoolProperty`), found by scanning the COM object's
-fields; `ad-rdphost.cs` does this. And never set
-`PromptForCredentials`/explicit credentials — that kills the auto-logon
-with disconnect reason 4408.
+`ad-rdphost` uses only the control's public COM surface: it writes the
+documented `ConnectToChildSession` extended property and invokes `Connect`
+through `IDispatch` late binding. It does not inspect or patch mstscax
+object memory. Do not set `PromptForCredentials` or explicit credentials:
+that kills the auto-logon with disconnect reason 4408.
 
 ## Current milestone status
 
@@ -193,6 +229,8 @@ internal/
   ipc/             named-pipe framing, server, client, PID check
   mcp/             MCP server + desktop_* tools
   authz/           main-desktop token gate
-  rdp/  remote/    seams for RDP loopback and worker injection
+  rdp/             RDP loopback seam (not needed by the current worker design)
+  remote/          best-effort documented WTS process launch for privileged hosts
+scripts/           build script and live Windows smoke test
 tests/pipecheck/   manual pipe round-trip smoke tool
 ```

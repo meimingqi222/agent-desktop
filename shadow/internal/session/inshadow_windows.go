@@ -2,8 +2,6 @@
 
 package session
 
-import "strings"
-
 func inShadowSession() (bool, error) {
 	id, err := currentSessionID()
 	if err != nil {
@@ -15,7 +13,7 @@ func inShadowSession() (bool, error) {
 	}
 	for _, s := range infos {
 		if s.ID == id {
-			return !strings.EqualFold(s.Name, "Console"), nil
+			return IsChildWinStationName(s.Name), nil
 		}
 	}
 	return false, nil
